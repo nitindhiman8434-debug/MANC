@@ -45,7 +45,7 @@ class HeuristicVoiceProfile(private val bands: Int = 16) : VoiceProfile {
             refF0 = f0s[f0s.size / 2]
             val lo = f0s[(f0s.size * 0.1).toInt()]
             val hi = f0s[(f0s.size * 0.9).toInt().coerceAtMost(f0s.size - 1)]
-            f0Spread = ((hi - lo) / 2).coerceAtLeast(25.0)
+            f0Spread = ((hi - lo) / 2).coerceAtLeast(18.0)
         }
         isEnrolled = true
         return true
@@ -53,15 +53,19 @@ class HeuristicVoiceProfile(private val bands: Int = 16) : VoiceProfile {
 
     override fun similarity(shape: DoubleArray, f0: Double, voiced: Boolean): Double {
         if (!isEnrolled) return 1.0 // not locked yet -> pass everything
-        // cosine of normalized shapes (both unit-norm already)
+        // cosine of normalized shapes (both unit-norm already), sharpened so only a
+        // genuinely close timbre scores high (broadly-similar voices are pushed down).
         var dot = 0.0
         for (b in 0 until bands) dot += shape[b] * refShape[b]
-        val timbre = ((dot + 1.0) / 2.0).coerceIn(0.0, 1.0)
-        val f0Score = if (voiced && f0 > 0 && refF0 > 0) {
+        val timbre = ((dot - 0.6) / 0.4).coerceIn(0.0, 1.0)
+        if (voiced && f0 > 0 && refF0 > 0) {
             val d = abs(f0 - refF0) / f0Spread
-            exp(-0.5 * d * d)
-        } else 0.5
-        return (0.7 * timbre + 0.3 * f0Score).coerceIn(0.0, 1.0)
+            val f0Score = exp(-0.5 * d * d)
+            // pitch is a strong speaker cue; weight it heavily when voiced
+            return (0.45 * timbre + 0.55 * f0Score).coerceIn(0.0, 1.0)
+        }
+        // unvoiced frame: fall back to timbre alone
+        return (0.9 * timbre).coerceIn(0.0, 1.0)
     }
 
     override fun exportState(): String {

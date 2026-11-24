@@ -13,10 +13,12 @@ class SpectralDenoiserTest {
         val est = NoiseEstimator(bins)
         // learn noise for a while (no speech)
         repeat(50) { est.update(DoubleArray(bins) { 1.0 }, 0.0) }
-        // a frame that is mostly noise with one strong speech bin
+        // a frame that is mostly noise with one strong speech bin; the decision-directed
+        // a-priori SNR converges over a few frames of streaming, so run to steady state.
         val power = DoubleArray(bins) { 1.0 }
         power[40] = 50.0
-        val g = den.computeGain(power, est.noisePower())
+        lateinit var g: DoubleArray
+        repeat(15) { g = den.computeGain(power, est.noisePower()) }
         assertTrue("noise bin attenuated", g[10] < 0.5)
         assertTrue("speech bin preserved", g[40] > 0.8)
     }
