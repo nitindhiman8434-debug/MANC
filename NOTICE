@@ -1,0 +1,15 @@
+MANC Voice
+Copyright 2026 MANC Voice contributors
+
+This product includes techniques and reflection patterns for calling hidden
+Android audio-policy APIs from a shell-privileged process, adapted from:
+
+  scrcpy — https://github.com/Genymobile/scrcpy
+  Licensed under the Apache License, Version 2.0.
+  Specifically the ActivityThread / FakeContext bootstrap and the
+  AudioPolicy/AudioMix registration approach.
+
+This product depends on, but does not include, the following at build time:
+  - ONNX Runtime (MIT) — https://github.com/microsoft/onnxruntime
+  - Shizuku API (Apache-2.0 / MIT) — https://github.com/RikkaApps/Shizuku-API
+  - AndroidX / Jetpack Compose (Apache-2.0)
