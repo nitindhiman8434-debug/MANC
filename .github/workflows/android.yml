@@ -11,6 +11,11 @@ permissions:
 
 jobs:
   build:
+    # A branch in this repository already gets a "push" run for every commit, and that
+    # run's checks show on the pull request. Skip the duplicate "pull_request" run (it only
+    # doubled the dependency downloads and tripped Maven Central's rate limit); pull
+    # requests from forks, which have no push run here, still build.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +25,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -44,10 +50,11 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Unit tests (DSP + voice-lock)
-        run: ./gradlew test --stacktrace
+        # one retry: dependency hosts occasionally answer 429/5xx
+        run: ./gradlew test --stacktrace || (sleep 45 && ./gradlew test --stacktrace)
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace || (sleep 45 && ./gradlew assembleDebug --stacktrace)
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
