@@ -1,95 +1,89 @@
-# v5 — one app, self-pairing (no separate Shizuku app)
+# v5 — one app, pair once, then automatic
 
-## The goal the user keeps asking for
+## The goal
 
-Install one app. Do one or two one-time steps. After that it just works on every
-call, with any earbuds, and survives reboots without being reopened.
+Install one app. Do a one-time step. After that every call is protected, with any
+earbuds, also after a restart, without opening anything.
 
-## The wall (why this is hard at all)
+## The wall
 
-Android deliberately forbids a normal app from changing the microphone audio that
-*another* app (WhatsApp, Zoom, the dialer) records. That is the app sandbox. To
-replace another app's mic input you must hold privileged audio permissions
-(`MODIFY_AUDIO_ROUTING`, `CAPTURE_AUDIO_OUTPUT`, ...), which Google only grants to:
+Android forbids a normal app from changing the microphone audio that *another* app
+(WhatsApp, Zoom, the dialer) records. The permissions that allow it
+(`MODIFY_AUDIO_ROUTING`, `CAPTURE_AUDIO_OUTPUT`, ...) belong only to:
 
-1. **System / OEM-signed apps** — needs Samsung. Not available to us.
+1. **OEM-signed system apps** — needs Samsung. Out of reach.
 2. **The shell user (UID 2000)** — reachable through ADB / wireless debugging.
-3. **root** — needs the phone rooted.
+3. **root** — riskier and harder for a normal user than anything below.
 
-Root is *more* complex and risky for a normal user than wireless debugging, and OEM
-signing is out of reach. So door #2 (shell UID via ADB) is the only sane path. There
-is no zero-permission trick: "no-root virtual mic" apps route to a playback stream
-that other apps do **not** read as microphone input, so they do not actually reach
-WhatsApp. We verified this.
+There is no permission-free trick. "No-root virtual microphone" apps play their output
+into a call *playback* stream, which other apps do not read as microphone input. An
+earbud companion app (Soundcore etc.) only controls the earbuds' own settings. So door 2
+stays; what can go is the second app that used to open it.
 
-## What changes in v5
+## What changed
 
-Until v4 the shell UID came from the **Shizuku app**: install Shizuku, start it via
-wireless debugging, grant MANC permission, and reopen Shizuku after every reboot. Two
-apps, several steps, repeated after reboot.
+Until v4 the shell user came from the Shizuku app: install it, start it through
+wireless debugging, grant MANC, and start it again after every reboot.
 
-v5 removes Shizuku entirely. MANC embeds its own ADB client
-([libadb-android](https://github.com/MuntashirAkon/libadb-android), Apache-2.0) and
-pairs with the **phone's own wireless-debugging daemon** on `127.0.0.1`. That is the
-same thing Shizuku does internally — we just do it in-process.
-
-Result for the user:
-
-- **One app.** No Shizuku, no second install, no permission hand-off.
-- **Setup once:** turn on Wireless debugging, enter a 6-digit pairing code into MANC.
-- **After reboot:** MANC finds the daemon again over mDNS and relaunches its bridge by
-  itself. Nothing to open. (If the OEM turns wireless debugging off on reboot, the user
-  flips one switch — still no app to open.)
-
-This is the simplest "install and done" that is possible on an unrooted phone. The
-one-time pairing cannot be removed: it is the security doorway itself.
-
-## Architecture
+v5 does the same thing itself:
 
 ```
- MANC app (UID 10xxx)                         shell server (UID 2000)
- ┌─────────────────────┐   ADB (127.0.0.1)    ┌──────────────────────────┐
- │ AdbManager (libadb) │◄───TLS, paired once──►│ adbd                      │
- │  - pair(code)       │                      │   │ launches via shell:    │
- │  - autoConnect mDNS │   shell: app_process │   ▼                        │
- │                     │─────────────────────►│ BridgeServer.main()        │
- │ AdbBridge           │                      │  - ShellContext (fake      │
- │  localabstract:ctl  │◄──── JSON status ────│    com.android.shell)      │
- │  localabstract:mic  │◄──── mic PCM ────────│  - ShellMic (real mic)     │
- │  localabstract:inj  │───── clean PCM ─────►│  - AudioReflect injector   │
- └─────────┬───────────┘                      └──────────────────────────┘
-           │ mic PCM in / clean PCM out
-           ▼
-   AudioEngine (denoise + voice-lock + AGC)  ← unchanged from v4
+one-time                        after every boot (automatic, ~10 s, Wi-Fi needed)
+MANC ── pair(6-digit code) ──►  MANC: wireless debugging ON → find port → connect
+        phone's own adbd              → run one shell command → disconnect → OFF
+
+the shell command (as UID 2000):
+  pm grant <pkg> WRITE_SECURE_SETTINGS        # lets MANC flip wireless debugging itself next time
+  cmd deviceidle whitelist +<pkg>             # keep the standby service alive
+  CLASSPATH=<apk> setsid app_process /system/bin --nice-name=manc_voice_bridge \
+      com.manc.voice.server.BridgeServer <pkg> <versionCode> <userId> &
+
+BridgeServer (detached helper) ── Binder(IVoiceBridge) via BridgeProvider.call() ──► MANC
+   hosts the unchanged VoiceBridgeService: ShellMic + AudioReflect injector + cellular
 ```
 
-- **Transport:** everything rides the one ADB connection as `localabstract:` streams.
-  adbd bridges them to `LocalServerSocket`s the server opens in the abstract namespace.
-  This avoids a direct shell-domain ↔ app-domain socket (SELinux would block that); it
-  is exactly how `adb forward localabstract:` works.
-- **The server** (`server/BridgeServer`) is launched with
-  `CLASSPATH=<app.apk> app_process /system/bin com.manc.voice.server.BridgeServer <appId>`
-  — the scrcpy pattern. It reuses the existing `ShellContext`, `ShellMic` and
-  `AudioReflect` unchanged (they were already written to run as the shell UID), and
-  touches no AndroidX so it loads cleanly under `app_process`.
-- **Shizuku stays as an automatic fallback:** if Shizuku is already installed and
-  running, MANC uses it; otherwise it uses the embedded ADB path. Nobody is broken.
+Key properties:
 
-## Honest limits
+- **ADB is only a launcher.** Audio never travels over ADB. Once the helper has handed
+  over its Binder, wireless debugging and Wi-Fi are not needed, so calls on mobile data
+  are protected.
+- **The helper outlives ADB.** It starts in its own session and moves itself out of
+  adbd's control group (init kills that group when adbd stops). If a phone still kills
+  it when wireless debugging goes off, `AdbLauncher` notices once and from then on leaves
+  wireless debugging on instead.
+- **The helper finds the app again.** It holds a liveness token from the app and re-sends
+  its Binder whenever the app process restarts. It exits when its APK disappears
+  (uninstall or update); the updated app starts a fresh one.
+- **Self-healing.** `VoiceService` relaunches the helper with backoff whenever the bridge
+  is missing and no step needs the user.
+- **Shizuku is optional.** `BridgeHub` prefers the built-in helper and uses a running
+  Shizuku automatically if that is all there is (the only route on Android 10).
 
-- Wireless debugging must be enabled once, and paired once. Unavoidable without root.
-- On Android 10 (API 29) there is no wireless debugging; those devices still need the
-  Shizuku fallback (or a PC). Fold 7 is far newer, so this is a non-issue for the user.
-- Cellular-call uplink remains device-gated (the modem path); unchanged from before.
-- The Soundcore P40i (or any earbuds) can't do this themselves — their companion app
-  only controls the earbuds' own settings, not other apps' call audio. MANC cleans on
-  the phone side, which is why it works with *any* earbuds.
+## Pieces
 
-## Staging
+| File | Role |
+|------|------|
+| `adb/AdbManager.kt` | Embedded ADB client (libadb-android, Apache-2.0); key + certificate generated once |
+| `adb/AdbLauncher.kt` | Pair, connect (mDNS, then loopback port sweep), run launch command, adaptive wireless-debugging toggle, diagnostics |
+| `adb/LaunchLogic.kt` | Pure decisions: which step the user is at, retry backoff, the launch script, trusted-caller check (unit-tested) |
+| `adb/PairingNotifier.kt` | Inline-reply notification for the pairing code |
+| `server/BridgeServer.kt` | The detached shell-user helper |
+| `server/BinderSender.kt` | Shell side of the Binder hand-over (`getContentProviderExternal` + `IContentProvider.call`) |
+| `bridge/BridgeProvider.kt` | App side of the hand-over; accepts only shell or root |
+| `bridge/BridgeHub.kt` | Single source of truth for "which bridge do we have" |
 
-- **A:** deps + `AdbManager` + `BridgeProtocol` + `BridgeServer` + test. (this change)
-- **B:** `AdbBridge` transport + a `Bridge` interface; wire `VoiceService` to prefer a
-  live Shizuku bridge, else the embedded ADB bridge.
-- **C:** self-pairing setup UI (deep-link to Wireless debugging, mDNS auto port, code
-  entry), make Shizuku optional in first-run.
-- **D:** docs + on-device test guide.
+## What cannot be removed
+
+- **Developer options + one pairing code.** That is the doorway itself.
+- **Wi-Fi once after each reboot.** Android only offers wireless debugging on Wi-Fi. On a
+  network it has not seen, Android asks once whether to allow wireless debugging there.
+- **Developer options must stay on.** Turning them off stops the helper.
+- Cellular uplink stays device-gated (modem routing), as before.
+
+## Not yet proven on a device
+
+This was built and unit-tested without a phone. The two places most likely to need a
+follow-up on One UI 8 are the helper surviving the end of the ADB session and the
+provider call from the shell process. Both report into *Home → Advanced → Connection
+diagnostics*, which prints the launcher state, the last launch output and the helper's
+own log.

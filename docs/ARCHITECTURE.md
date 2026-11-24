@@ -49,11 +49,13 @@ What changes the picture: the Android **shell** user (UID 2000, `com.android.she
 *does* hold the needed permissions — verified against AOSP `packages/Shell/AndroidManifest.xml`:
 `MODIFY_AUDIO_ROUTING`, `CAPTURE_AUDIO_OUTPUT`, `CAPTURE_MEDIA_OUTPUT`,
 `CAPTURE_VOICE_COMMUNICATION_OUTPUT`, `CALL_AUDIO_INTERCEPTION`, `MODIFY_PHONE_STATE`.
-**Shizuku** lets a normal app run a small service *as that shell user* after a one-time,
-user-granted activation (on-device wireless debugging on Android 11+, no PC, no root).
+The phone's own **wireless debugging** (Android 11+) gives a normal app a way to start
+a process *as that shell user* after a one-time pairing: no PC, no root.
 
 So the design is: keep the heavy audio work in the app, and do only the privileged
-audio-routing in a shell-side **bridge** started through Shizuku.
+audio-routing in a shell-side **bridge**. Since v5 the app starts that bridge itself
+(embedded ADB client, used only as a launcher; see `docs/NO_SHIZUKU_DESIGN.md`); a
+running Shizuku is still accepted as an alternative way to host the same bridge.
 
 ## 4. The virtual-microphone mechanism (VoIP path — the reliable one)
 
@@ -142,10 +144,11 @@ app and the telephony stack switch the mode to RINGTONE / IN_CALL / IN_COMMUNICA
 for the duration of a call and back to NORMAL afterwards, so the pipeline (bridge mic
 + injector + engine) is started at ring time and torn down at hang-up, for any app,
 without the user opening MANC. Older releases fall back to telephony call state
-(cellular only). A boot receiver restores standby after a reboot; Shizuku itself
-must be started once per boot (Android restriction), and the notification says so.
+(cellular only). A boot receiver restores standby after a reboot, and the service
+restarts the shell helper by itself (it holds `WRITE_SECURE_SETTINGS` after the first
+launch, so it can switch wireless debugging on for the few seconds this takes).
 
-Because the Shizuku bridge is the only process that records, the app needs no
+Because the shell bridge is the only process that records, the app needs no
 `RECORD_AUDIO` and no microphone-type foreground service, which removes Android
 14+'s while-in-use restrictions on background-started services.
 
@@ -190,8 +193,9 @@ says so rather than failing silently. The Cellular Lab screen surfaces this to t
   falls back from UID-matching to preset-only. "Clean everywhere" injects into every
   recorder (voice assistants and recorders included) by design.
 - Cellular is device-gated (see §7); the app probes and reports instead of pretending.
-- Shizuku must be restarted after a reboot (an Android restriction); Google has discussed
-  restricting on-device ADB, which could affect Shizuku in future.
+- The helper is started through on-device ADB: it needs Developer options to stay on and
+  Wi-Fi once after each reboot. Google has discussed restricting on-device ADB, which
+  would affect this path (and Shizuku) in future.
 - The earbuds remain the quality ceiling (§2).
 
 ## 9. Measured results (offline harness, synthetic speech with word gaps, 16 kHz)

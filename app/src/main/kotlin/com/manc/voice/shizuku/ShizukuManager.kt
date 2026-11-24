@@ -84,7 +84,7 @@ object ShizukuManager {
             ).daemon(false)
              .processNameSuffix("bridge")
              .debuggable(BuildConfig.DEBUG)
-             .version(1)
+             .version(BuildConfig.VERSION_CODE) // restart the user service whenever the app (and its bridge code) changes
             userArgs = args
             Shizuku.bindUserService(args, connection)
         } catch (e: Throwable) {

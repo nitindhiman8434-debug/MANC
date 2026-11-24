@@ -37,4 +37,23 @@ interface IVoiceBridge {
     String startCleanEverywhere(in ParcelFileDescriptor cleanPcmReadEnd, int sampleRate);
 
     int getProtocolVersion();
+
+    // ---- Binder audio transport (protocol 2) ----
+    // No file descriptor crosses the process boundary, so SELinux rules about
+    // pipes between the shell domain and the app domain cannot get in the way.
+
+    // Open the real microphone inside the bridge. Returns false if no configuration worked.
+    boolean openMic(int sampleRate);
+
+    // Blocks for about 20 ms and returns that much mic PCM (16-bit LE mono at the
+    // requested rate). An empty array means the microphone is closed or failed.
+    byte[] readMic();
+
+    // Open where the cleaned voice goes. mode: 0 = every recorder (+ cellular when
+    // allowed), 1 = one app (arg = its UID), 2 = one capture preset (arg = preset),
+    // 3 = cellular uplink only. Returns JSON with at least "started".
+    String openSink(int mode, int arg, int sampleRate);
+
+    // Cleaned PCM (16-bit LE mono) for the sink opened above.
+    void writeClean(in byte[] pcm);
 }

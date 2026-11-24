@@ -13,30 +13,45 @@ on-device. It is free and open source.
 
 | Call type | Status | How |
 |-----------|--------|-----|
-| WhatsApp, Zoom, Meet, Telegram, Discord, Teams (VoIP) | Supported (Android 13+) | Virtual microphone via a Shizuku shell bridge |
+| WhatsApp, Zoom, Meet, Telegram, Discord, Teams (VoIP) | Supported (Android 13+) | Virtual microphone via MANC's own shell-user helper |
 | Cellular (phone-network) calls | Device-dependent, experimental | Only if the phone exposes call audio to software — check in Cellular Lab |
 
 Cellular cleaning is impossible on phones that route call audio inside the modem
 (most of them). The app tells you honestly after a one-tap device check instead
 of pretending.
 
-## Why it needs Shizuku
+## Why the one-time pairing
 
 Android does not let an ordinary app replace the microphone inside other apps.
-The Android **shell** user does hold the required audio permissions. [Shizuku](https://shizuku.rikka.app)
-lets MANC run a tiny bridge as that shell user after a one-time, on-device
-activation (wireless debugging on Android 11+, no PC, no root). MANC itself never
-holds those permissions; the bridge does, and only while you run it.
+Only the Android **shell** user holds the required audio permissions, and the
+only way to it without root is the phone's own **wireless debugging**. MANC pairs
+with it once (no PC, no root, no second app) and starts a small helper as that
+shell user. MANC itself never holds those permissions; the helper does.
 
 ## Install (once)
 
-1. Install the MANC APK (see Releases) and open it. Protection turns on by itself.
-2. The "Get ready" screen walks you through Shizuku: **Install** (Play Store) →
-   **Open Shizuku** and tap Start → **Allow**. The bridge connects automatically.
+1. Install the MANC APK (see Releases), open it and allow notifications.
+2. **Connect** — the "Get ready" screen shows one button at a time:
+   - Developer options off: open *About phone → Software information* and tap
+     **Build number** 7 times.
+   - Open *Developer options*, turn on **Wireless debugging**, tap its name, then
+     **Pair device with pairing code**.
+   - Pull down the notification bar and type the 6 digits into the MANC
+     notification (or use the in-app field in split screen).
 3. Tap **Record** and talk for 5 seconds so the mic opens only for you.
 
-That is all. The app never asks for microphone access: the Shizuku bridge captures
-the microphone, the app only processes audio.
+That is all, and it is done once. The phone must be on Wi-Fi for step 2 only.
+After a restart MANC switches wireless debugging on for a few seconds, restarts
+its helper and switches it off again, by itself (the phone needs Wi-Fi once after
+booting; calls on mobile data are protected afterwards). On a new Wi-Fi network
+Android may ask once to allow wireless debugging there: tap **Allow**.
+
+Shizuku is no longer needed. If it is already installed and running, MANC can use
+it instead ("Already use Shizuku?" on the setup screen); on Android 10, which has
+no wireless debugging, it is the only option.
+
+Keep **Developer options** on: switching them off stops the helper. If anything
+does not connect, *Home → Advanced → Connection diagnostics* shows exactly why.
 
 ### "App not installed" on a Samsung phone
 
@@ -66,8 +81,7 @@ means an older build with a different key is still installed).
 Nothing to do. Protection stands by in the background and **starts by itself the
 moment a call connects** (WhatsApp, Zoom, Meet, Telegram, Discord, Teams, or a
 cellular call where the phone allows it) and stops when the call ends. It comes
-back after a reboot; you only start Shizuku once after rebooting (the notification
-tells you when). Advanced knobs (strength, neural depth, limit to one app, a
+back after a reboot without being opened (see above). Advanced knobs (strength, neural depth, limit to one app, a
 "run now" test switch, Cellular Lab) are under **Advanced** on the Home screen.
 
 ## Build

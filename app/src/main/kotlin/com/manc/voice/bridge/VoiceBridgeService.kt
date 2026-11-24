@@ -16,8 +16,9 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 
 /**
- * Runs inside the Shizuku-provided shell process (UID 2000). Implements the
- * bridge the app binds to. The shell UID is what makes the hidden audio-routing
+ * Runs inside the shell-user process (UID 2000): MANC's own helper
+ * (server/BridgeServer) or, as a fallback, a Shizuku user service. Implements the
+ * bridge the app talks to. The shell UID is what makes the hidden audio-routing
  * and call-interception APIs reachable; the app itself never holds them.
  */
 class VoiceBridgeService : IVoiceBridge.Stub {
@@ -38,7 +39,18 @@ class VoiceBridgeService : IVoiceBridge.Stub {
 
     private val cellular = CellularRedirectEngine()
 
-    override fun getProtocolVersion(): Int = 1
+    // Binder transport state: the mic is read on demand, and cleaned PCM is fed to
+    // the existing injector threads through a pipe that stays inside this process.
+    @Volatile private var pullRecord: AudioRecord? = null
+    private var pullRate = 16000
+    private var pullShorts = ShortArray(0)
+    private var pullIn = FloatArray(0)
+    private var pullOut = FloatArray(0)
+    private var pullResampler: Resampler? = null
+    @Volatile private var sinkPfd: ParcelFileDescriptor? = null
+    @Volatile private var sinkOut: FileOutputStream? = null
+
+    override fun getProtocolVersion(): Int = 2
 
     override fun describeEnvironment(): String {
         val j = JSONObject()
@@ -102,6 +114,90 @@ class VoiceBridgeService : IVoiceBridge.Stub {
         try { micRecord?.stop() } catch (_: Throwable) {}
         try { micRecord?.release() } catch (_: Throwable) {}
         micRecord = null
+        val pr = pullRecord
+        pullRecord = null
+        try { pr?.stop() } catch (_: Throwable) {}
+        try { pr?.release() } catch (_: Throwable) {}
+    }
+
+    override fun openMic(sampleRate: Int): Boolean {
+        stopMicCapture()
+        val rec = ShellMic.create(sampleRate) ?: return false
+        if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); return false }
+        val devRate = rec.sampleRate
+        pullRate = sampleRate
+        pullShorts = ShortArray(devRate / 50) // 20 ms at the device rate
+        pullIn = FloatArray(pullShorts.size)
+        pullOut = FloatArray(sampleRate / 50 + 16)
+        pullResampler = if (devRate != sampleRate) Resampler(devRate, sampleRate) else null
+        return try {
+            rec.startRecording()
+            pullRecord = rec
+            true
+        } catch (e: Throwable) {
+            Log.w(TAG, "openMic start: ${e.message}")
+            try { rec.release() } catch (_: Throwable) {}
+            false
+        }
+    }
+
+    override fun readMic(): ByteArray {
+        val rec = pullRecord ?: return EMPTY
+        return try {
+            val n = rec.read(pullShorts, 0, pullShorts.size)
+            if (n <= 0) return EMPTY
+            val rs = pullResampler
+            if (rs != null) {
+                for (i in 0 until n) pullIn[i] = pullShorts[i] / 32768f
+                val m = rs.process(pullIn, n, pullOut)
+                val bytes = ByteArray(m * 2)
+                for (i in 0 until m) {
+                    var v = (pullOut[i] * 32767f).toInt(); if (v > 32767) v = 32767 else if (v < -32768) v = -32768
+                    bytes[i * 2] = (v and 0xFF).toByte(); bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+                }
+                bytes
+            } else {
+                val bytes = ByteArray(n * 2)
+                for (i in 0 until n) {
+                    val v = pullShorts[i].toInt()
+                    bytes[i * 2] = (v and 0xFF).toByte(); bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+                }
+                bytes
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "readMic: ${e.message}"); EMPTY
+        }
+    }
+
+    override fun openSink(mode: Int, arg: Int, sampleRate: Int): String {
+        return try {
+            val pipe = ParcelFileDescriptor.createPipe() // both ends stay in this process
+            val report: String = when (mode) {
+                0 -> startCleanEverywhere(pipe[0], sampleRate)
+                1 -> JSONObject().put("started", startInjectionForUid(arg, pipe[0], sampleRate)).toString()
+                2 -> JSONObject().put("started", startInjectionForPreset(arg, pipe[0], sampleRate)).toString()
+                3 -> startCellularRedirect(pipe[0], sampleRate)
+                else -> JSONObject().put("started", false).put("reason", "unknown mode $mode").toString()
+            }
+            // the start* calls above closed any previous sink; publish the new one now
+            sinkPfd = pipe[1]
+            sinkOut = FileOutputStream(pipe[1].fileDescriptor)
+            report
+        } catch (e: Throwable) {
+            JSONObject().put("started", false).put("reason", e.message ?: e.toString()).toString()
+        }
+    }
+
+    override fun writeClean(pcm: ByteArray?) {
+        if (pcm == null || pcm.isEmpty()) return
+        try { sinkOut?.write(pcm) } catch (e: Throwable) { Log.w(TAG, "writeClean: ${e.message}") }
+    }
+
+    private fun closeSink() {
+        val o = sinkOut; val p = sinkPfd
+        sinkOut = null; sinkPfd = null
+        try { o?.close() } catch (_: Throwable) {}
+        try { p?.close() } catch (_: Throwable) {}
     }
 
     override fun startInjectionForUid(targetUid: Int, cleanPcmReadEnd: ParcelFileDescriptor, sampleRate: Int): Boolean =
@@ -143,6 +239,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
 
     override fun stopInjection() {
         injRunning = false
+        closeSink() // unblocks an injector thread waiting on the in-process pipe
         try { cellular.stop() } catch (_: Throwable) {}
         try { injThread?.join(200) } catch (_: Throwable) {}
         injThread = null
@@ -202,5 +299,8 @@ class VoiceBridgeService : IVoiceBridge.Stub {
 
     override fun stopCellularRedirect() { cellular.stop() }
 
-    companion object { private const val TAG = "VoiceBridgeService" }
+    companion object {
+        private const val TAG = "VoiceBridgeService"
+        private val EMPTY = ByteArray(0)
+    }
 }

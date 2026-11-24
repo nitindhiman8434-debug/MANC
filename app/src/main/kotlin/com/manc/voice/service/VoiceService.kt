@@ -11,7 +11,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.manc.voice.Controller
@@ -25,8 +24,6 @@ import com.manc.voice.shizuku.ShizukuManager
 import com.manc.voice.adb.AdbLauncher
 import com.manc.voice.bridge.BridgeHub
 import org.json.JSONObject
-import java.io.FileInputStream
-import java.io.FileOutputStream
 
 /**
  * Always-on standby service. While "protection" is on it:
@@ -170,44 +167,36 @@ class VoiceService : Service() {
     }
 
     private fun loop(bridge: com.manc.voice.bridge.IVoiceBridge, engine: AudioEngine) {
-        var micRead: ParcelFileDescriptor? = null
         try {
-            micRead = bridge.startMicCapture(SR) ?: run {
+            // Audio crosses to the shell bridge as Binder calls only (no pipes between
+            // the two processes), ~20 ms per call in each direction.
+            if (!bridge.openMic(SR)) {
                 Controller.setStatus("Microphone capture failed in the bridge.")
                 return
             }
-            val cleanPipe = ParcelFileDescriptor.createPipe()
-            val cleanRead = cleanPipe[0]
-            val cleanWrite = cleanPipe[1]
 
             val mode = Controller.mode.value
-            val ok: Boolean = when (mode) {
-                Controller.Mode.AUTO -> {
-                    val r = bridge.startCleanEverywhere(cleanRead, SR)
-                    val j = try { JSONObject(r) } catch (e: Exception) { JSONObject() }
-                    val apps = j.optBoolean("apps", false); val cell = j.optBoolean("cellular", false)
-                    Controller.setSinks(buildString {
-                        if (apps) append("all apps")
-                        if (apps && cell) append(" + ")
-                        if (cell) append("cellular")
-                        if (!apps && !cell) append("none")
-                    })
-                    j.optBoolean("started", false)
-                }
+            val report: String = when (mode) {
+                Controller.Mode.AUTO -> bridge.openSink(SINK_EVERYWHERE, 0, SR)
                 Controller.Mode.VOIP -> {
                     val pkg = Controller.targetPackage.value
-                    if (pkg != null) {
-                        val uid = try { packageManager.getPackageUid(pkg, 0) } catch (e: Exception) { -1 }
-                        if (uid >= 0) bridge.startInjectionForUid(uid, cleanRead, SR)
-                        else bridge.startInjectionForPreset(7, cleanRead, SR)
-                    } else bridge.startInjectionForPreset(7, cleanRead, SR)
+                    val uid = if (pkg != null) try { packageManager.getPackageUid(pkg, 0) } catch (e: Exception) { -1 } else -1
+                    if (uid >= 0) bridge.openSink(SINK_UID, uid, SR) else bridge.openSink(SINK_PRESET, 7, SR)
                 }
-                Controller.Mode.CELLULAR -> {
-                    val report = bridge.startCellularRedirect(cleanRead, SR)
-                    Controller.setCellularReport(report)
-                    report.contains("\"started\":true")
-                }
+                Controller.Mode.CELLULAR -> bridge.openSink(SINK_CELLULAR, 0, SR)
             }
+            val j = try { JSONObject(report) } catch (e: Exception) { JSONObject() }
+            val ok = j.optBoolean("started", false)
+            if (mode == Controller.Mode.AUTO) {
+                val apps = j.optBoolean("apps", false); val cell = j.optBoolean("cellular", false)
+                Controller.setSinks(buildString {
+                    if (apps) append("all apps")
+                    if (apps && cell) append(" + ")
+                    if (cell) append("cellular")
+                    if (!apps && !cell) append("none")
+                })
+            }
+            if (mode == Controller.Mode.CELLULAR) Controller.setCellularReport(report)
             if (!ok) {
                 Controller.setStatus(when (mode) {
                     Controller.Mode.CELLULAR -> "Cellular path not available on this device (see Cellular Lab report)."
@@ -225,65 +214,78 @@ class VoiceService : Service() {
             })
             handler.post { updateNotification() }
 
-            val input = FileInputStream(micRead.fileDescriptor)
-            val output = FileOutputStream(cleanWrite.fileDescriptor)
-            val chunk = SR / 50 // 20 ms
-            val inBytes = ByteArray(chunk * 2)
+            val chunk = SR / 50 // the engine works on exact 20 ms blocks
+            val chunkBytes = chunk * 2
+            val acc = ByteArray(chunkBytes * 8)
+            var accLen = 0
             val inFloat = FloatArray(chunk)
             val outFloat = FloatArray(chunk)
-            val outBytes = ByteArray(chunk * 2)
+            var emptyReads = 0
 
             while (pipelineRunning) {
-                var filled = 0
-                while (filled < inBytes.size) {
-                    val r = input.read(inBytes, filled, inBytes.size - filled)
-                    if (r <= 0) { pipelineRunning = false; break }
-                    filled += r
+                val mic = bridge.readMic()
+                if (mic.isEmpty()) {
+                    if (++emptyReads > 50) { Controller.setStatus("The microphone stopped delivering audio."); break }
+                    try { Thread.sleep(10) } catch (_: InterruptedException) {}
+                    continue
                 }
-                if (!pipelineRunning) break
-                val n = filled / 2
-                for (i in 0 until n) {
-                    val lo = inBytes[i * 2].toInt() and 0xFF
-                    val hi = inBytes[i * 2 + 1].toInt()
-                    inFloat[i] = (((hi shl 8) or lo).toShort()).toInt() / 32768f
-                }
-                applyConfig(engine)
-                if (Controller.enrollRequested) { Controller.enrollRequested = false; engine.beginEnroll() }
-                if (Controller.enrollFinishRequested) {
-                    Controller.enrollFinishRequested = false
-                    val ok2 = engine.finishEnroll()
-                    val prof = engine.exportProfile()
-                    Controller.enrolledProfile = prof
-                    Controller.setEnrolled(ok2)
-                    if (ok2) Prefs.saveVoiceprintAsync(applicationContext, prof)
-                    engine.exportNeuralProfile()?.let { np -> Controller.enrolledNeural = np; Prefs.saveNeuralVoiceprintAsync(applicationContext, np) }
-                }
+                emptyReads = 0
+                val take = minOf(mic.size, acc.size - accLen)
+                System.arraycopy(mic, 0, acc, accLen, take)
+                accLen += take
 
-                val produced = engine.process(inFloat, n, outFloat)
-                for (i in 0 until produced) {
-                    var s = (outFloat[i] * 32767f).toInt()
-                    if (s > 32767) s = 32767 else if (s < -32768) s = -32768
-                    outBytes[i * 2] = (s and 0xFF).toByte()
-                    outBytes[i * 2 + 1] = ((s shr 8) and 0xFF).toByte()
+                while (accLen >= chunkBytes && pipelineRunning) {
+                    for (i in 0 until chunk) {
+                        val lo = acc[i * 2].toInt() and 0xFF
+                        val hi = acc[i * 2 + 1].toInt()
+                        inFloat[i] = (((hi shl 8) or lo).toShort()).toInt() / 32768f
+                    }
+                    accLen -= chunkBytes
+                    System.arraycopy(acc, chunkBytes, acc, 0, accLen)
+
+                    applyConfig(engine)
+                    if (Controller.enrollRequested) { Controller.enrollRequested = false; engine.beginEnroll() }
+                    if (Controller.enrollFinishRequested) {
+                        Controller.enrollFinishRequested = false
+                        val ok2 = engine.finishEnroll()
+                        val prof = engine.exportProfile()
+                        Controller.enrolledProfile = prof
+                        Controller.setEnrolled(ok2)
+                        if (ok2) Prefs.saveVoiceprintAsync(applicationContext, prof)
+                        engine.exportNeuralProfile()?.let { np -> Controller.enrolledNeural = np; Prefs.saveNeuralVoiceprintAsync(applicationContext, np) }
+                    }
+
+                    val produced = engine.process(inFloat, chunk, outFloat)
+                    if (produced > 0) {
+                        val outBytes = ByteArray(produced * 2)
+                        for (i in 0 until produced) {
+                            var v = (outFloat[i] * 32767f).toInt()
+                            if (v > 32767) v = 32767 else if (v < -32768) v = -32768
+                            outBytes[i * 2] = (v and 0xFF).toByte()
+                            outBytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+                        }
+                        bridge.writeClean(outBytes)
+                    }
+                    Controller.publishMeters(engine.meters)
                 }
-                output.write(outBytes, 0, produced * 2)
-                Controller.publishMeters(engine.meters)
             }
-            try { output.close() } catch (_: Throwable) {}
         } catch (e: Throwable) {
             Log.e(TAG, "loop error", e)
-            Controller.setStatus("Audio loop error: ${e.message}")
+            Controller.setStatus(
+                if (e is android.os.DeadObjectException) "The bridge stopped. Reconnecting…" else "Audio loop error: ${e.message}"
+            )
         } finally {
             try { bridge.stopInjection() } catch (_: Throwable) {}
             try { bridge.stopCellularRedirect() } catch (_: Throwable) {}
             try { bridge.stopMicCapture() } catch (_: Throwable) {}
-            try { micRead?.close() } catch (_: Throwable) {}
             pipelineRunning = false
             handler.post {
                 Controller.publishMeters(Meters())
                 if (!stopping) Controller.setRun(Controller.Run.STANDBY)
                 updateNotification()
             }
+            // if the call is still on (for example the helper was restarted mid-call), try again shortly
+            handler.postDelayed({ if (!stopping && !pipelineRunning) evaluate() }, 3000)
         }
     }
 
@@ -310,6 +312,11 @@ class VoiceService : Service() {
     companion object {
         const val ACTION_STOP = "com.manc.voice.STOP"
         const val ACTION_EVALUATE = "com.manc.voice.EVALUATE"
+        // IVoiceBridge.openSink modes
+        private const val SINK_EVERYWHERE = 0
+        private const val SINK_UID = 1
+        private const val SINK_PRESET = 2
+        private const val SINK_CELLULAR = 3
         private const val NOTIF_ID = 1
 
         /** Turn protection on (standby + auto-activate on calls). */
