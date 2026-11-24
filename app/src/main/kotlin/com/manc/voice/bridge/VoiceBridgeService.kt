@@ -1,0 +1,423 @@
+package com.manc.voice.bridge
+
+import android.media.AudioRecord
+import android.os.Build
+import android.os.ParcelFileDescriptor
+import android.os.Process
+import android.util.Log
+import com.manc.voice.bridge.cellular.CallInterceptProbe
+import com.manc.voice.bridge.cellular.CellularRedirectEngine
+import com.manc.voice.bridge.hidden.AudioReflect
+import com.manc.voice.bridge.hidden.BridgeLog
+import com.manc.voice.bridge.hidden.ShellContext
+import com.manc.voice.bridge.hidden.ShellMic
+import com.manc.voice.audio.dsp.Resampler
+import org.json.JSONObject
+import java.io.FileInputStream
+import java.io.FileOutputStream
+
+/**
+ * Runs inside the shell-user process (UID 2000): MANC's own helper
+ * (server/BridgeServer) or, as a fallback, a Shizuku user service. Implements the
+ * bridge the app talks to. The shell UID is what makes the hidden audio-routing
+ * and call-interception APIs reachable; the app itself never holds them.
+ */
+class VoiceBridgeService : IVoiceBridge.Stub {
+
+    @Suppress("unused")
+    constructor() { prepare() }
+
+    @Suppress("unused")
+    constructor(ctx: android.content.Context) { prepare() }
+
+    /**
+     * For MANC's own helper: construct without touching the shell context, so the
+     * Binder can be handed to the app even if the bootstrap is slow or broken. The
+     * audio entry points bootstrap on first use.
+     */
+    constructor(deferBootstrap: Boolean) { if (!deferBootstrap) prepare() }
+
+    /** UID of the app this bridge serves; set by the helper once it has resolved it. */
+    @Volatile var allowedUid: Int = -1
+
+    /**
+     * Every call arrives on a Binder thread carrying the *app's* identity, and the
+     * framework's own client-side checks use it: AudioPolicy.createAudioTrackSource
+     * asks checkCallingOrSelfPermission(MODIFY_AUDIO_ROUTING), finds the app without
+     * it and returns null (first seen on a Galaxy Z Fold 7, Android 17). The bridge
+     * exists to act as the shell user, so check the caller once, then drop its
+     * identity for the duration of the call.
+     */
+    public override fun onTransact(code: Int, data: android.os.Parcel, reply: android.os.Parcel?, flags: Int): Boolean {
+        val caller = android.os.Binder.getCallingUid()
+        if (!com.manc.voice.adb.LaunchLogic.isAllowedBridgeCaller(caller, allowedUid, Process.myUid())) {
+            throw SecurityException("MANC bridge: uid $caller is not allowed")
+        }
+        val token = android.os.Binder.clearCallingIdentity()
+        try {
+            return super.onTransact(code, data, reply, flags)
+        } finally {
+            android.os.Binder.restoreCallingIdentity(token)
+        }
+    }
+
+    /** Set when the shell-context bootstrap failed; reported by describeEnvironment(). */
+    @Volatile private var initError: String? = null
+
+    // Never let the bootstrap abort construction: the Binder must reach the app so
+    // that a failure here is reported instead of looking like "the helper did not start".
+    private fun prepare() {
+        try { ShellContext.prepare() } catch (e: Throwable) {
+            initError = BridgeLog.describe(e)
+            BridgeLog.e(TAG, "shell context bootstrap failed", e)
+        }
+    }
+
+    @Volatile private var micRecord: AudioRecord? = null
+    @Volatile private var micThread: Thread? = null
+    @Volatile private var micRunning = false
+
+    @Volatile private var injection: AudioReflect.InjectionHandle? = null
+    @Volatile private var injThread: Thread? = null
+    @Volatile private var injRunning = false
+
+    private val cellular by lazy { CellularRedirectEngine() }
+
+    // Binder transport state: the mic is read on demand, and cleaned PCM is fed to
+    // the existing injector threads through a pipe that stays inside this process.
+    @Volatile private var pullRecord: AudioRecord? = null
+    private var pullRate = 16000
+    private var pullShorts = ShortArray(0)
+    private var pullIn = FloatArray(0)
+    private var pullOut = FloatArray(0)
+    private var pullResampler: Resampler? = null
+    @Volatile private var sinkPfd: ParcelFileDescriptor? = null
+    @Volatile private var sinkOut: FileOutputStream? = null
+
+    override fun getProtocolVersion(): Int = 2
+
+    override fun describeEnvironment(): String {
+        val j = JSONObject()
+        j.put("uid", Process.myUid())
+        j.put("pid", Process.myPid())
+        j.put("package", ShellContext.PACKAGE_NAME)
+        j.put("sdkInt", Build.VERSION.SDK_INT)
+        j.put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
+        initError?.let { j.put("initError", it) }
+        // must never throw: this is the call the app uses to find out what went wrong
+        try { if (ShellContext.notes.isNotBlank()) j.put("notes", ShellContext.notes.trim()) }
+        catch (e: Throwable) { j.put("notes", "shell context unusable: ${BridgeLog.describe(e)}") }
+        j.put("log", BridgeLog.dump())
+        return j.toString()
+    }
+
+    override fun startMicCapture(sampleRate: Int): ParcelFileDescriptor? {
+        stopMicCapture()
+        val rec = ShellMic.create(sampleRate) ?: return null
+        if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); return null }
+        val pipe = ParcelFileDescriptor.createPipe()
+        val readEnd = pipe[0]
+        val writeEnd = pipe[1]
+        micRecord = rec
+        micRunning = true
+        rec.startRecording()
+        micThread = Thread {
+            val out = FileOutputStream(writeEnd.fileDescriptor)
+            val devRate = rec.sampleRate
+            val shorts = ShortArray(devRate / 50) // 20 ms at device rate
+            val fin = FloatArray(shorts.size)
+            val fout = FloatArray(sampleRate / 50 + 16)
+            val bytes = ByteArray(fout.size * 2)
+            val resampler = if (devRate != sampleRate) Resampler(devRate, sampleRate) else null
+            try {
+                while (micRunning) {
+                    val n = rec.read(shorts, 0, shorts.size)
+                    if (n <= 0) continue
+                    val m: Int
+                    if (resampler != null) {
+                        for (i in 0 until n) fin[i] = shorts[i] / 32768f
+                        m = resampler.process(fin, n, fout)
+                        for (i in 0 until m) {
+                            var v = (fout[i] * 32767f).toInt(); if (v > 32767) v = 32767 else if (v < -32768) v = -32768
+                            bytes[i * 2] = (v and 0xFF).toByte(); bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+                        }
+                    } else {
+                        m = n
+                        for (i in 0 until n) {
+                            val s = shorts[i].toInt()
+                            bytes[i * 2] = (s and 0xFF).toByte(); bytes[i * 2 + 1] = ((s shr 8) and 0xFF).toByte()
+                        }
+                    }
+                    out.write(bytes, 0, m * 2)
+                }
+            } catch (e: Throwable) { BridgeLog.w(TAG, "mic loop end: ${BridgeLog.describe(e)}") }
+            finally { try { out.close() } catch (_: Throwable) {}; try { writeEnd.close() } catch (_: Throwable) {} }
+        }.apply { isDaemon = true; start() }
+        return readEnd
+    }
+
+    override fun stopMicCapture() {
+        micRunning = false
+        try { micThread?.join(200) } catch (_: Throwable) {}
+        micThread = null
+        try { micRecord?.stop() } catch (_: Throwable) {}
+        try { micRecord?.release() } catch (_: Throwable) {}
+        micRecord = null
+        val pr = pullRecord
+        pullRecord = null
+        try { pr?.stop() } catch (_: Throwable) {}
+        try { pr?.release() } catch (_: Throwable) {}
+    }
+
+    override fun openMic(sampleRate: Int): Boolean = openMicInternal(sampleRate, avoidVoiceCommunication = false)
+
+    private fun openMicInternal(sampleRate: Int, avoidVoiceCommunication: Boolean): Boolean { synchronized(micLock) {
+        prepare()
+        stopMicCapture()
+        val rec = try { ShellMic.create(sampleRate, avoidVoiceCommunication) } catch (e: Throwable) { BridgeLog.e(TAG, "openMic failed", e); null } ?: return false
+        if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); return false }
+        val devRate = rec.sampleRate
+        BridgeLog.i(TAG, "mic open at $devRate Hz (wanted $sampleRate)")
+        pullRate = sampleRate
+        pullShorts = ShortArray(devRate / 50) // 20 ms at the device rate
+        pullIn = FloatArray(pullShorts.size)
+        pullOut = FloatArray(sampleRate / 50 + 16)
+        pullResampler = if (devRate != sampleRate) Resampler(devRate, sampleRate) else null
+        return try {
+            rec.startRecording()
+            pullRecord = rec
+            true
+        } catch (e: Throwable) {
+            BridgeLog.w(TAG, "openMic start: ${BridgeLog.describe(e)}")
+            try { rec.release() } catch (_: Throwable) {}
+            false
+        }
+    } }
+
+    private val micLock = Any()
+
+    /**
+     * True when the system has routed our own microphone capture to a policy mix
+     * (a remote-submix device) instead of a real microphone: we would then be
+     * listening to an injected stream, not to the user.
+     */
+    private fun ownCaptureIsOnAMix(): Boolean = try {
+        val am = ShellContext.context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        am.activeRecordingConfigurations.any { c ->
+            val uid = try { c.javaClass.getMethod("getClientUid").invoke(c) as Int } catch (_: Throwable) { -1 }
+            uid == Process.myUid() && c.audioDevice?.type == android.media.AudioDeviceInfo.TYPE_REMOTE_SUBMIX
+        }
+    } catch (_: Throwable) { false }
+
+    /** Reopen the microphone with a source no policy mix is matching. */
+    private fun escapeMix(moment: String) {
+        if (!ownCaptureIsOnAMix()) return
+        BridgeLog.e(TAG, "our own microphone capture was routed to a policy mix ($moment); reopening with another source")
+        val ok = openMicInternal(pullRate, avoidVoiceCommunication = true)
+        BridgeLog.i(TAG, "microphone reopened: $ok; still on a mix: ${ownCaptureIsOnAMix()}")
+    }
+
+    override fun readMic(): ByteArray { synchronized(micLock) {
+        val rec = pullRecord ?: return EMPTY
+        return try {
+            val n = rec.read(pullShorts, 0, pullShorts.size)
+            if (n <= 0) return EMPTY
+            val rs = pullResampler
+            if (rs != null) {
+                for (i in 0 until n) pullIn[i] = pullShorts[i] / 32768f
+                val m = rs.process(pullIn, n, pullOut)
+                val bytes = ByteArray(m * 2)
+                for (i in 0 until m) {
+                    var v = (pullOut[i] * 32767f).toInt(); if (v > 32767) v = 32767 else if (v < -32768) v = -32768
+                    bytes[i * 2] = (v and 0xFF).toByte(); bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+                }
+                bytes
+            } else {
+                val bytes = ByteArray(n * 2)
+                for (i in 0 until n) {
+                    val v = pullShorts[i].toInt()
+                    bytes[i * 2] = (v and 0xFF).toByte(); bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+                }
+                bytes
+            }
+        } catch (e: Throwable) {
+            BridgeLog.w(TAG, "readMic: ${BridgeLog.describe(e)}"); EMPTY
+        }
+    } }
+
+    override fun openSink(mode: Int, arg: Int, sampleRate: Int): String {
+        prepare()
+        return try {
+            val pipe = ParcelFileDescriptor.createPipe() // both ends stay in this process
+            val report: String = when (mode) {
+                0 -> startCleanEverywhere(pipe[0], sampleRate)
+                1 -> JSONObject().put("started", startInjectionForUid(arg, pipe[0], sampleRate)).toString()
+                2 -> JSONObject().put("started", startInjectionForPreset(arg, pipe[0], sampleRate)).toString()
+                3 -> startCellularRedirect(pipe[0], sampleRate)
+                else -> JSONObject().put("started", false).put("reason", "unknown mode $mode").toString()
+            }
+            // the start* calls above closed any previous sink; publish the new one now
+            sinkPfd = pipe[1]
+            sinkOut = FileOutputStream(pipe[1].fileDescriptor)
+            logRecorders("start")
+            // and once more when the call app's own recorder has had time to start
+            val mySink = sinkOut
+            Thread({
+                // watch the routing for the whole run: the call app's recorder can start late,
+                // and a route change (earbuds on/off) re-evaluates every recorder
+                var elapsed = 0L
+                while (true) {
+                    try { Thread.sleep(1000) } catch (_: InterruptedException) { }
+                    elapsed += 1000
+                    if (sinkOut !== mySink) return@Thread // that run is over
+                    escapeMix("${elapsed / 1000} s")
+                    if (elapsed == 4000L || elapsed == 20000L) {
+                        logRecorders("after ${elapsed / 1000} s"); injection?.let { BridgeLog.i(TAG, it.stats()) }
+                    }
+                }
+            }, "manc-recorders").apply { isDaemon = true; start() }
+            report
+        } catch (e: Throwable) {
+            BridgeLog.e(TAG, "openSink mode=$mode failed", e)
+            JSONObject().put("started", false).put("reason", BridgeLog.describe(e)).toString()
+        }
+    }
+
+    override fun writeClean(pcm: ByteArray?) {
+        if (pcm == null || pcm.isEmpty()) return
+        try { sinkOut?.write(pcm) } catch (e: Throwable) { BridgeLog.w(TAG, "writeClean: ${BridgeLog.describe(e)}") }
+    }
+
+    /**
+     * Who is recording right now, as the system sees it: each recorder's source, the
+     * device it is fed from, and whether the system is silencing it. During a call
+     * this shows directly whether the call app was moved onto the virtual microphone
+     * and whether our own microphone capture is allowed to hear anything.
+     */
+    private fun logRecorders(moment: String) {
+        try {
+            val am = ShellContext.context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            val list = am.activeRecordingConfigurations
+            BridgeLog.i(TAG, "recorders[$moment]: ${list.size}, mode=${am.mode}")
+            for (c in list) {
+                val uid = try { c.javaClass.getMethod("getClientUid").invoke(c) } catch (_: Throwable) { "?" }
+                val pkg = try { c.javaClass.getMethod("getClientPackageName").invoke(c) } catch (_: Throwable) { "?" }
+                val dev = c.audioDevice
+                BridgeLog.i(TAG, "  uid=$uid pkg=$pkg source=${c.clientAudioSource} silenced=${c.isClientSilenced} " +
+                    "device=${dev?.type}/${dev?.address} rate=${c.clientFormat.sampleRate}")
+            }
+        } catch (e: Throwable) { BridgeLog.w(TAG, "recorders[$moment]: ${BridgeLog.describe(e)}") }
+    }
+
+    private fun closeSink() {
+        val o = sinkOut; val p = sinkPfd
+        sinkOut = null; sinkPfd = null
+        try { o?.close() } catch (_: Throwable) {}
+        try { p?.close() } catch (_: Throwable) {}
+    }
+
+    override fun startInjectionForUid(targetUid: Int, cleanPcmReadEnd: ParcelFileDescriptor, sampleRate: Int): Boolean =
+        startInjection(targetUid, AudioReflect.CALL_PRESETS, cleanPcmReadEnd, sampleRate, forCall = false)
+
+    override fun startInjectionForPreset(capturePreset: Int, cleanPcmReadEnd: ParcelFileDescriptor, sampleRate: Int): Boolean =
+        startInjection(null, intArrayOf(capturePreset), cleanPcmReadEnd, sampleRate, forCall = false)
+
+    private fun startInjection(uid: Int?, presets: IntArray, readEnd: ParcelFileDescriptor, sampleRate: Int, forCall: Boolean): Boolean {
+        stopInjection()
+        val handle = AudioReflect.registerInjector(uid, presets, sampleRate, forCall) ?: run {
+            try { readEnd.close() } catch (_: Throwable) {}
+            return false
+        }
+        handle.start()
+        injection = handle
+        injRunning = true
+        injThread = Thread {
+            val input = FileInputStream(readEnd.fileDescriptor)
+            val bytes = ByteArray(sampleRate / 25 * 2) // 40 ms
+            val shorts = ShortArray(bytes.size / 2)
+            try {
+                while (injRunning) {
+                    val read = input.read(bytes)
+                    if (read <= 0) break
+                    val n = read / 2
+                    for (i in 0 until n) {
+                        val lo = bytes[i * 2].toInt() and 0xFF
+                        val hi = bytes[i * 2 + 1].toInt()
+                        shorts[i] = ((hi shl 8) or lo).toShort()
+                    }
+                    handle.write(shorts, n)
+                }
+            } catch (e: Throwable) { BridgeLog.w(TAG, "inj loop end: ${BridgeLog.describe(e)}") }
+            finally { try { input.close() } catch (_: Throwable) {}; try { readEnd.close() } catch (_: Throwable) {} }
+        }.apply { isDaemon = true; start() }
+        return true
+    }
+
+    override fun stopInjection() {
+        if (injRunning) logRecorders("stop")
+        injRunning = false
+        closeSink() // unblocks an injector thread waiting on the in-process pipe
+        try { cellular.stop() } catch (_: Throwable) {}
+        try { injThread?.join(200) } catch (_: Throwable) {}
+        injThread = null
+        try { injection?.release() } catch (_: Throwable) {}
+        injection = null
+    }
+
+    override fun startCleanEverywhere(cleanPcmReadEnd: ParcelFileDescriptor, sampleRate: Int): String {
+        stopInjection()
+        val report = JSONObject()
+        val handle = AudioReflect.registerInjector(null, AudioReflect.CALL_PRESETS, sampleRate, forCall = false)
+        val cellOk = cellular.attach(sampleRate)
+        report.put("apps", handle != null)
+        report.put("cellular", cellOk)
+        if (handle == null && !cellOk) {
+            try { cleanPcmReadEnd.close() } catch (_: Throwable) {}
+            report.put("started", false)
+            report.put("reason", "No sink available: virtual mic registration failed and cellular is not interceptable.")
+            return report.toString()
+        }
+        handle?.start()
+        injection = handle
+        injRunning = true
+        injThread = Thread {
+            val input = FileInputStream(cleanPcmReadEnd.fileDescriptor)
+            val bytes = ByteArray(sampleRate / 25 * 2) // 40 ms
+            val shorts = ShortArray(bytes.size / 2)
+            try {
+                while (injRunning) {
+                    val read = input.read(bytes)
+                    if (read <= 0) break
+                    val n = read / 2
+                    for (i in 0 until n) {
+                        val lo = bytes[i * 2].toInt() and 0xFF
+                        val hi = bytes[i * 2 + 1].toInt()
+                        shorts[i] = ((hi shl 8) or lo).toShort()
+                    }
+                    handle?.write(shorts, n)
+                    if (cellular.isAttached) cellular.write(shorts, n)
+                }
+            } catch (e: Throwable) { BridgeLog.w(TAG, "fanout loop end: ${BridgeLog.describe(e)}") }
+            finally { try { input.close() } catch (_: Throwable) {}; try { cleanPcmReadEnd.close() } catch (_: Throwable) {} }
+        }.apply { isDaemon = true; start() }
+        report.put("started", true)
+        return report.toString()
+    }
+
+    override fun probeCellular(): String { prepare(); return CallInterceptProbe.run() }
+
+    override fun startCellularRedirect(cleanPcmReadEnd: ParcelFileDescriptor, sampleRate: Int): String {
+        return try {
+            cellular.start(FileInputStream(cleanPcmReadEnd.fileDescriptor), sampleRate)
+        } catch (e: Throwable) {
+            JSONObject().put("started", false).put("reason", e.message ?: e.toString()).toString()
+        }
+    }
+
+    override fun stopCellularRedirect() { cellular.stop() }
+
+    companion object {
+        private const val TAG = "VoiceBridgeService"
+        private val EMPTY = ByteArray(0)
+    }
+}

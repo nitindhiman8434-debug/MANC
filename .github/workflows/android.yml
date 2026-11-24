@@ -1,0 +1,74 @@
+name: Android CI
+
+on:
+  push:
+    branches: [ "claude/**", "main" ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # A branch in this repository already gets a "push" run for every commit, and that
+    # run's checks show on the pull request. Skip the duplicate "pull_request" run (it only
+    # doubled the dependency downloads and tripped Maven Central's rate limit); pull
+    # requests from forks, which have no push run here, still build.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Install SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Fetch neural models (GTCRN denoiser + wespeaker CAM++ speaker embedder)
+        run: |
+          mkdir -p app/src/main/assets/models
+          curl -fsSL -o app/src/main/assets/models/denoiser.onnx \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx"
+          curl -fsSL -o app/src/main/assets/models/speaker.onnx \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM%2B%2B.onnx"
+          ls -la app/src/main/assets/models
+
+      - name: Grant gradlew
+        run: chmod +x ./gradlew
+
+      - name: Unit tests (DSP + voice-lock)
+        # one retry: dependency hosts occasionally answer 429/5xx
+        run: ./gradlew test --stacktrace || (sleep 45 && ./gradlew test --stacktrace)
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --stacktrace || (sleep 45 && ./gradlew assembleDebug --stacktrace)
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: manc-voice-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Publish rolling prerelease
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/'))
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-latest
+          name: Latest CI build
+          prerelease: true
+          files: app/build/outputs/apk/debug/*.apk
+        continue-on-error: true
