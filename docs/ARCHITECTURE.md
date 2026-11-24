@@ -81,37 +81,35 @@ injected virtual source), the app does the DSP, and the bridge injects the clean
 into the target UID. Audio crosses process boundaries over `ParcelFileDescriptor` pipes,
 not binder calls, so there is no per-frame IPC overhead.
 
-## 5. The engine
+## 5. The engine (v2)
 
-16 kHz mono, 256-sample frames, 128-sample hop (8 ms), 50% overlap-add:
+16 kHz mono, 256-sample frames, 128-sample hop (8 ms), 50% overlap-add. One shared
+pure-Kotlin pipeline, `CleanChain`, runs identically in the app, the unit tests and the
+offline harness:
 
 ```
-STFT ─► noise estimate ─► VAD ─► spectral denoise gain
-     ─► voice features ─► owner similarity ─► voice-lock gate ─► combine ─► ISTFT ─► limiter
+[GTCRN neural denoiser, when bundled]
+   -> STFT -> noise estimate (minimum statistics + VAD-gated) -> VAD
+   -> spectral denoise gain (fallback only when no neural denoiser)
+   -> voice features on the DENOISED signal: robust 16-band shape + harmonic-sieve pitch
+   -> owner similarity (model-free voiceprint, blended 50/50 with the neural speaker
+      embedder when bundled) -> voice-lock gate (hard mute) -> ISTFT -> limiter
 ```
 
-- **Denoise:** decision-directed Wiener suppressor (pure Kotlin, always on). An ONNX
-  denoiser (e.g. GTCRN) can be dropped in via the model slot.
-- **Voice-lock (the differentiator):** opens the mic only for the enrolled owner. A
-  model-free voiceprint (f0 range + 16-band log-spectrum shape) gives a per-frame
-  similarity; an optional ONNX speaker embedder (wespeaker/3D-Speaker CAM++) refines it
-  as a slow prior. The gate is a dual-threshold hysteresis with hangover and
-  asymmetric attack/release.
+Design decisions that came out of measurement (see §9 for the numbers):
 
-### Why the voice-lock matters
-
-Generic denoisers keep *all* speech, so a bystander talking next to you still passes.
-The voice-lock is what delivers "send only my voice". Measured on a 60 s turn-taking
-simulation (ported verbatim into the unit test `VoiceLockGateTest`):
-
-| Signal                | Result          |
-|-----------------------|-----------------|
-| Owner speech retained | ~0.0 dB (full)  |
-| Bystander speech      | about -22 dB    |
-| Sustained background  | about -42 dB    |
-| Mic-open latency (p90)| ~12 ms          |
-
-A `strength` slider interpolates from calm to aggressive muting.
+- **Noise estimate = minimum statistics.** A VAD-gated estimator alone deadlocks: a stale
+  estimate makes new noise look like speech, so it is never learned. Tracking the floor of
+  sub-window minima over ~1.3 s learns background regardless of the VAD, and cannot learn
+  sustained speech (speech has valleys). A freeze flag suspends it during enrollment.
+- **Features on the denoised signal.** Pitch/timbre computed on raw audio collapse in noise.
+- **Pitch by harmonic sieve** (comb minus anti-comb on a log-compressed 1024-pt spectrum),
+  noise-robust and alias-resistant; the speaker match is additionally **octave-tolerant**
+  because every tracker makes octave errors in noise.
+- **Fail-open safety.** Someone who is clearly speaking is never hard-muted merely because
+  identity evidence is missing. Hard mute is for silence/background, or a bystander the
+  voiceprint can positively tell apart. The user's own voice is the top priority.
+- **Hard mute** (gate closed -> true silence) with strong defaults (strength 0.85).
 
 ## 6. Latency budget
 
@@ -136,16 +134,39 @@ says so rather than failing silently. The Cellular Lab screen surfaces this to t
 
 ## 8. Limitations and risks
 
+- **Heavy noise with no neural model.** At about -10 dB SNR (noise three times louder than
+  the voice) the model-free VAD cannot separate speech from background, so the fallback
+  path keeps the gate closed when the owner starts talking into learned noise. This is the
+  case the bundled GTCRN denoiser exists for: it cleans the signal before the chain, and
+  the neural speaker embedder gives identity evidence the heuristic cannot. Without
+  models, expect reliable behaviour down to roughly 0 dB SNR (measured), not below.
 - VoIP injection needs Android 13+ and the shell bridge; Android 16 is confirmed in the
   wild, 17 is expected to work but is less proven without root.
 - Some OEM ROMs vary in audio-policy behaviour; the injector builds per-preset mixes and
-  falls back from UID-matching to preset-only.
-- Shizuku must be restarted after a reboot (an Android restriction).
-- Google has discussed restricting on-device ADB, which could affect Shizuku in future.
-- The earbuds remain the quality ceiling (section 2).
-- The ONNX models are optional; without them the app uses the model-free path.
+  falls back from UID-matching to preset-only. "Clean everywhere" injects into every
+  recorder (voice assistants and recorders included) by design.
+- Cellular is device-gated (see §7); the app probes and reports instead of pretending.
+- Shizuku must be restarted after a reboot (an Android restriction); Google has discussed
+  restricting on-device ADB, which could affect Shizuku in future.
+- The earbuds remain the quality ceiling (§2).
 
-## 9. Test protocol (on the device)
+## 9. Measured results (offline harness, synthetic speech with word gaps, 16 kHz)
+
+Model-free path (no ONNX models), strength 0.85, hard mute, realistic order
+(background first, then the owner starts talking, then a bystander):
+
+| Scenario (SNR ~0 dB)              | Result    | Gate open |
+|-----------------------------------|-----------|-----------|
+| Background before anyone speaks   | -93 dB    | 0 %       |
+| Owner starts talking into noise   | -7 dB (noise stripped, voice kept) | 85 % |
+| Bystander (different voice) talks | -44 dB    | 0 %       |
+| Background afterwards             | -93 dB    | 0 %       |
+| Owner, clean room                 | +1 dB (preserved) | 81 % |
+
+At SNR ~-10 dB the model-free path mutes the owner (see §8); the neural denoiser is the
+remedy. All numbers are reproduced by `EngineChainTest` on every CI run.
+
+## 10. Test protocol (on the device)
 
 1. **Reality check:** record yourself in a noisy place through the P40i; run the engine
    offline and A/B the before/after. This measures how much survives the earbuds.

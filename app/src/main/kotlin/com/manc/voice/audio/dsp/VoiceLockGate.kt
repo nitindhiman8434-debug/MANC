@@ -15,9 +15,10 @@ import kotlin.math.tanh
  */
 class VoiceLockGate(frameMs: Double) {
     // strength 0..1 interpolates calm -> aggressive muting
-    var strength: Double = 0.5
+    var strength: Double = 0.85
     var enabled: Boolean = true
     var nearFieldEnabled: Boolean = false
+    var hardMute: Boolean = true
 
     private var open = false
     private var hangoverLeft = 0.0
@@ -25,8 +26,8 @@ class VoiceLockGate(frameMs: Double) {
 
     // thresholds on fused confidence
     private val vadOn = 0.6
-    private var openTh = 0.70
-    private var closeTh = 0.58
+    private var openTh = 0.54
+    private var closeTh = 0.42
     private val nfPivotDb = 5.0
     private val nfScaleDb = 4.0
     private val nfWeight = 0.12
@@ -37,12 +38,14 @@ class VoiceLockGate(frameMs: Double) {
     private val hangoverMs get() = lerp(160.0, 90.0, strength)
     private val frameMsLocal = frameMs
 
-    private val closedFloor get() = lerp(0.12, 0.0, strength) // residual pass when closed
+    private val closedFloor get() = if (hardMute) 0.0 else lerp(0.12, 0.0, strength)
 
     fun process(vadProb: Double, ownerSimilarity: Double, nearFieldDb: Double): Double {
         if (!enabled) return 1.0
-        openTh = lerp(0.66, 0.74, strength)
-        closeTh = lerp(0.54, 0.62, strength)
+        // calibrated to the voiceprint scale: owner ~0.6-1.0 (clean) / ~0.5-0.7 (noisy),
+        // bystander ~0.0-0.45, background ~0.0-0.35
+        openTh = lerp(0.48, 0.56, strength)
+        closeTh = lerp(0.36, 0.44, strength)
 
         val speech = vadProb > vadOn
         val nfTerm = if (nearFieldEnabled) tanh((nearFieldDb - nfPivotDb) / nfScaleDb) else 0.0

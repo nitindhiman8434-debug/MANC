@@ -9,5 +9,6 @@ data class Meters(
     val gate: Float = 0f,
     val nearFieldDb: Float = 0f,
     val usingOnnxEmbedder: Boolean = false,
+    val usingOnnxDenoiser: Boolean = false,
     val locked: Boolean = false
 )

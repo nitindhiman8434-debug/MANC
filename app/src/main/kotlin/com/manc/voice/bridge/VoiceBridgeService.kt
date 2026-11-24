@@ -10,6 +10,7 @@ import com.manc.voice.bridge.cellular.CellularRedirectEngine
 import com.manc.voice.bridge.hidden.AudioReflect
 import com.manc.voice.bridge.hidden.ShellContext
 import com.manc.voice.bridge.hidden.ShellMic
+import com.manc.voice.audio.dsp.Resampler
 import org.json.JSONObject
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -61,18 +62,32 @@ class VoiceBridgeService : IVoiceBridge.Stub {
         rec.startRecording()
         micThread = Thread {
             val out = FileOutputStream(writeEnd.fileDescriptor)
-            val shorts = ShortArray(sampleRate / 50) // 20 ms
-            val bytes = ByteArray(shorts.size * 2)
+            val devRate = rec.sampleRate
+            val shorts = ShortArray(devRate / 50) // 20 ms at device rate
+            val fin = FloatArray(shorts.size)
+            val fout = FloatArray(sampleRate / 50 + 16)
+            val bytes = ByteArray(fout.size * 2)
+            val resampler = if (devRate != sampleRate) Resampler(devRate, sampleRate) else null
             try {
                 while (micRunning) {
                     val n = rec.read(shorts, 0, shorts.size)
                     if (n <= 0) continue
-                    for (i in 0 until n) {
-                        val s = shorts[i].toInt()
-                        bytes[i * 2] = (s and 0xFF).toByte()
-                        bytes[i * 2 + 1] = ((s shr 8) and 0xFF).toByte()
+                    val m: Int
+                    if (resampler != null) {
+                        for (i in 0 until n) fin[i] = shorts[i] / 32768f
+                        m = resampler.process(fin, n, fout)
+                        for (i in 0 until m) {
+                            var v = (fout[i] * 32767f).toInt(); if (v > 32767) v = 32767 else if (v < -32768) v = -32768
+                            bytes[i * 2] = (v and 0xFF).toByte(); bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+                        }
+                    } else {
+                        m = n
+                        for (i in 0 until n) {
+                            val s = shorts[i].toInt()
+                            bytes[i * 2] = (s and 0xFF).toByte(); bytes[i * 2 + 1] = ((s shr 8) and 0xFF).toByte()
+                        }
                     }
-                    out.write(bytes, 0, n * 2)
+                    out.write(bytes, 0, m * 2)
                 }
             } catch (e: Throwable) { Log.w(TAG, "mic loop end: ${e.message}") }
             finally { try { out.close() } catch (_: Throwable) {}; try { writeEnd.close() } catch (_: Throwable) {} }
@@ -128,10 +143,51 @@ class VoiceBridgeService : IVoiceBridge.Stub {
 
     override fun stopInjection() {
         injRunning = false
+        try { cellular.stop() } catch (_: Throwable) {}
         try { injThread?.join(200) } catch (_: Throwable) {}
         injThread = null
         try { injection?.release() } catch (_: Throwable) {}
         injection = null
+    }
+
+    override fun startCleanEverywhere(cleanPcmReadEnd: ParcelFileDescriptor, sampleRate: Int): String {
+        stopInjection()
+        val report = JSONObject()
+        val handle = AudioReflect.registerInjector(null, AudioReflect.CALL_PRESETS, sampleRate, forCall = false)
+        val cellOk = cellular.attach(sampleRate)
+        report.put("apps", handle != null)
+        report.put("cellular", cellOk)
+        if (handle == null && !cellOk) {
+            try { cleanPcmReadEnd.close() } catch (_: Throwable) {}
+            report.put("started", false)
+            report.put("reason", "No sink available: virtual mic registration failed and cellular is not interceptable.")
+            return report.toString()
+        }
+        handle?.start()
+        injection = handle
+        injRunning = true
+        injThread = Thread {
+            val input = FileInputStream(cleanPcmReadEnd.fileDescriptor)
+            val bytes = ByteArray(sampleRate / 25 * 2) // 40 ms
+            val shorts = ShortArray(bytes.size / 2)
+            try {
+                while (injRunning) {
+                    val read = input.read(bytes)
+                    if (read <= 0) break
+                    val n = read / 2
+                    for (i in 0 until n) {
+                        val lo = bytes[i * 2].toInt() and 0xFF
+                        val hi = bytes[i * 2 + 1].toInt()
+                        shorts[i] = ((hi shl 8) or lo).toShort()
+                    }
+                    handle?.write(shorts, n)
+                    if (cellular.isAttached) cellular.write(shorts, n)
+                }
+            } catch (e: Throwable) { Log.w(TAG, "fanout loop end: ${e.message}") }
+            finally { try { input.close() } catch (_: Throwable) {}; try { cleanPcmReadEnd.close() } catch (_: Throwable) {} }
+        }.apply { isDaemon = true; start() }
+        report.put("started", true)
+        return report.toString()
     }
 
     override fun probeCellular(): String = CallInterceptProbe.run()

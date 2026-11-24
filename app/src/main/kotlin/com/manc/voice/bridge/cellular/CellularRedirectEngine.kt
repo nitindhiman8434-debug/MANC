@@ -78,6 +78,34 @@ class CellularRedirectEngine {
         return json.toString()
     }
 
+    /** Fan-out mode: open the uplink track only (no reader thread). */
+    fun attach(sampleRate: Int): Boolean {
+        return try {
+            val am = ShellContext.context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val interceptable = try {
+                AudioManager::class.java.getMethod("isPstnCallAudioInterceptable").invoke(am) as Boolean
+            } catch (e: Throwable) { false }
+            if (!interceptable) return false
+            val format = AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build()
+            val m = AudioManager::class.java.getMethod("getCallUplinkInjectionAudioTrack", AudioFormat::class.java)
+            val t = m.invoke(am, format) as AudioTrack
+            t.play()
+            track = t
+            true
+        } catch (e: Throwable) { Log.w(TAG, "attach: ${e.message}"); false }
+    }
+
+    fun write(shorts: ShortArray, n: Int) {
+        val t = track ?: return
+        try { t.write(shorts, 0, n, AudioTrack.WRITE_NON_BLOCKING) } catch (_: Throwable) {}
+    }
+
+    val isAttached get() = track != null
+
     fun stop() {
         running = false
         try { thread?.join(200) } catch (_: Throwable) {}

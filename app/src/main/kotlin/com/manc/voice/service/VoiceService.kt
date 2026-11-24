@@ -14,6 +14,8 @@ import com.manc.voice.MainActivity
 import com.manc.voice.MancApp
 import com.manc.voice.R
 import com.manc.voice.audio.AudioEngine
+import com.manc.voice.data.Prefs
+import org.json.JSONObject
 import com.manc.voice.shizuku.ShizukuManager
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -92,6 +94,18 @@ class VoiceService : Service() {
 
             val mode = Controller.mode.value
             val ok: Boolean = when (mode) {
+                Controller.Mode.AUTO -> {
+                    val r = bridge.startCleanEverywhere(cleanRead, SR)
+                    val j = try { JSONObject(r) } catch (e: Exception) { JSONObject() }
+                    val apps = j.optBoolean("apps", false); val cell = j.optBoolean("cellular", false)
+                    Controller.setSinks(buildString {
+                        if (apps) append("all apps")
+                        if (apps && cell) append(" + ")
+                        if (cell) append("cellular")
+                        if (!apps && !cell) append("none")
+                    })
+                    j.optBoolean("started", false)
+                }
                 Controller.Mode.VOIP -> {
                     val pkg = Controller.targetPackage.value
                     if (pkg != null) {
@@ -108,16 +122,22 @@ class VoiceService : Service() {
             }
             if (!ok) {
                 Controller.setStatus(
-                    if (mode == Controller.Mode.CELLULAR)
-                        "Cellular path not available on this device (see Cellular Lab report)."
-                    else "Could not install the virtual microphone for the selected app."
+                    when (mode) {
+                        Controller.Mode.CELLULAR -> "Cellular path not available on this device (see Cellular Lab report)."
+                        Controller.Mode.AUTO -> "Could not install the virtual microphone. Is the Shizuku bridge connected?"
+                        else -> "Could not install the virtual microphone for the selected app."
+                    }
                 )
                 Controller.setRun(Controller.Run.ERROR)
                 return
             }
 
             Controller.setRun(Controller.Run.RUNNING)
-            Controller.setStatus(if (mode == Controller.Mode.CELLULAR) "Cleaning cellular uplink." else "Cleaning your microphone.")
+            Controller.setStatus(when (mode) {
+                Controller.Mode.CELLULAR -> "Cleaning cellular uplink."
+                Controller.Mode.AUTO -> "Cleaning everywhere: ${Controller.sinks.value}."
+                else -> "Cleaning your microphone."
+            })
 
             val input = FileInputStream(micRead.fileDescriptor)
             val output = FileOutputStream(cleanWrite.fileDescriptor)
@@ -147,8 +167,10 @@ class VoiceService : Service() {
                 if (Controller.enrollFinishRequested) {
                     Controller.enrollFinishRequested = false
                     val ok2 = engine.finishEnroll()
-                    Controller.enrolledProfile = engine.exportProfile()
+                    val prof = engine.exportProfile()
+                    Controller.enrolledProfile = prof
                     Controller.setEnrolled(ok2)
+                    if (ok2) Prefs.saveVoiceprintAsync(applicationContext, prof)
                 }
 
                 val produced = engine.process(inFloat, n, outFloat)

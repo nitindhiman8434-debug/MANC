@@ -7,7 +7,8 @@ import kotlinx.coroutines.flow.StateFlow
 
 /** Shared state between the UI and the foreground audio service. */
 object Controller {
-    enum class Mode { VOIP, CELLULAR }
+    /** AUTO = clean everywhere (all apps + cellular when supported); others are advanced overrides. */
+    enum class Mode { AUTO, VOIP, CELLULAR }
     enum class Run { STOPPED, STARTING, RUNNING, ERROR }
 
     val config = EngineConfig()
@@ -20,7 +21,7 @@ object Controller {
     val run: StateFlow<Run> = _run
     fun setRun(r: Run) { _run.value = r }
 
-    private val _mode = MutableStateFlow(Mode.VOIP)
+    private val _mode = MutableStateFlow(Mode.AUTO)
     val mode: StateFlow<Mode> = _mode
     fun setMode(m: Mode) { _mode.value = m }
 
@@ -31,6 +32,12 @@ object Controller {
     private val _status = MutableStateFlow("")
     val status: StateFlow<String> = _status
     fun setStatus(s: String) { _status.value = s }
+
+    private val _sinks = MutableStateFlow("")
+    val sinks: StateFlow<String> = _sinks
+    fun setSinks(s: String) { _sinks.value = s }
+
+    @Volatile var autoStart: Boolean = true
 
     private val _cellularReport = MutableStateFlow<String?>(null)
     val cellularReport: StateFlow<String?> = _cellularReport

@@ -7,6 +7,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import com.manc.voice.data.Prefs
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.manc.voice.Controller
@@ -28,10 +30,11 @@ fun HomeScreen(
     val run by Controller.run.collectAsState()
     val meters by Controller.meters.collectAsState()
     val status by Controller.status.collectAsState()
-    val mode by Controller.mode.collectAsState()
     val target by Controller.targetPackage.collectAsState()
     val enrolled by Controller.enrolled.collectAsState()
     val shz by ShizukuManager.state.collectAsState()
+    val sinks by Controller.sinks.collectAsState()
+    val ctx = LocalContext.current
 
     var strength by remember { mutableStateOf(Controller.config.strength) }
     var voiceLock by remember { mutableStateOf(Controller.config.voiceLockEnabled) }
@@ -80,22 +83,21 @@ fun HomeScreen(
                 color = MaterialTheme.colorScheme.primary)
         }
 
-        SectionCard("What to clean") {
-            val isVoip = mode == Controller.Mode.VOIP
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = isVoip, onClick = { Controller.setMode(Controller.Mode.VOIP) },
-                    label = { Text("App calls") })
-                FilterChip(selected = !isVoip, onClick = { Controller.setMode(Controller.Mode.CELLULAR) },
-                    label = { Text("Cellular (beta)") })
+        SectionCard("Where it cleans") {
+            Text("Everywhere, automatically: every app that uses your microphone gets the cleaned voice, " +
+                    "and cellular calls too on phones that allow it.",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (running && sinks.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text("Active now: $sinks", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
             }
             Spacer(Modifier.height(8.dp))
-            if (isVoip) {
-                OutlinedButton(onClick = onApps, Modifier.fillMaxWidth()) {
-                    Text(target?.let { "Target app: $it" } ?: "Pick the calling app")
-                }
-            } else {
-                OutlinedButton(onClick = onCellular, Modifier.fillMaxWidth()) {
-                    Text("Open Cellular Lab (check device support)")
+            TextButton(onClick = {
+                Controller.setMode(Controller.Mode.VOIP); onApps()
+            }) { Text(target?.let { "Advanced: limited to $it (tap to change)" } ?: "Advanced: limit to one app") }
+            if (target != null) {
+                TextButton(onClick = { Controller.setTarget(null); Controller.setMode(Controller.Mode.AUTO) }) {
+                    Text("Back to everywhere")
                 }
             }
         }
@@ -111,7 +113,7 @@ fun HomeScreen(
             }
             Spacer(Modifier.height(6.dp))
             Text("Strength", style = MaterialTheme.typography.labelMedium)
-            Slider(value = strength, onValueChange = { strength = it; Controller.config.strength = it }, valueRange = 0f..1f)
+            Slider(value = strength, onValueChange = { strength = it; Controller.config.strength = it }, onValueChangeFinished = { Prefs.saveStrengthAsync(ctx, strength) }, valueRange = 0f..1f)
             Spacer(Modifier.height(4.dp))
             OutlinedButton(onClick = onEnroll, Modifier.fillMaxWidth()) {
                 Text(if (enrolled) "Re-teach my voice" else "Teach the app my voice")
@@ -129,6 +131,8 @@ fun HomeScreen(
                 })
             Spacer(Modifier.height(8.dp))
             Button(onClick = onSetup, Modifier.fillMaxWidth()) { Text("Open setup") }
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(onClick = onCellular, Modifier.fillMaxWidth()) { Text("Cellular Lab (device check)") }
         }
         Spacer(Modifier.height(24.dp))
     }

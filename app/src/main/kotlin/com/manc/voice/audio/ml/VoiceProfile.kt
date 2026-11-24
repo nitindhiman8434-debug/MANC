@@ -2,6 +2,7 @@ package com.manc.voice.audio.ml
 
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.max
 
 /** A learned owner reference and a per-frame similarity scorer in [0,1]. */
 interface VoiceProfile {
@@ -51,21 +52,37 @@ class HeuristicVoiceProfile(private val bands: Int = 16) : VoiceProfile {
         return true
     }
 
+    private var emaSim = 1.0
+    private var lastRaw = 0.8
+
     override fun similarity(shape: DoubleArray, f0: Double, voiced: Boolean): Double {
         if (!isEnrolled) return 1.0 // not locked yet -> pass everything
-        // cosine of normalized shapes (both unit-norm already), sharpened so only a
-        // genuinely close timbre scores high (broadly-similar voices are pushed down).
+        // cosine of normalized shapes (both unit-norm already). The map accepts the
+        // owner reliably (dot ~0.6-1.0) while pushing a different voice (dot <~0.5) low.
         var dot = 0.0
         for (b in 0 until bands) dot += shape[b] * refShape[b]
-        val timbre = ((dot - 0.6) / 0.4).coerceIn(0.0, 1.0)
-        if (voiced && f0 > 0 && refF0 > 0) {
-            val d = abs(f0 - refF0) / f0Spread
-            val f0Score = exp(-0.5 * d * d)
-            // pitch is a strong speaker cue; weight it heavily when voiced
-            return (0.45 * timbre + 0.55 * f0Score).coerceIn(0.0, 1.0)
+        val timbre = ((dot - 0.35) / 0.55).coerceIn(0.0, 1.0)
+        val raw: Double = if (voiced && f0 > 0 && refF0 > 0) {
+            // Octave-tolerant pitch match: pitch trackers make octave errors in noise,
+            // so accept f0, 2*f0 and f0/2 against the reference with a mild penalty.
+            fun match(ref: Double, pen: Double): Double {
+                val d = abs(f0 - ref) / f0Spread
+                return pen * exp(-0.5 * d * d)
+            }
+            val f0Score = maxOf(match(refF0, 1.0), match(refF0 * 2.0, 0.85), match(refF0 / 2.0, 0.85))
+            lastRaw = (0.5 * timbre + 0.5 * f0Score).coerceIn(0.0, 1.0)
+            lastRaw
+        } else {
+            // unvoiced frame (consonant / gap / pitch not found): hold the recent
+            // decision so the gate does not chop the owner mid-word; drift only slowly
+            // toward the timbre evidence.
+            // Drift toward a neutral score (keeps an open gate open, does not open a closed one).
+            lastRaw = (0.95 * lastRaw + 0.05 * max(timbre, 0.46)).coerceIn(0.0, 1.0)
+            lastRaw
         }
-        // unvoiced frame: fall back to timbre alone
-        return (0.9 * timbre).coerceIn(0.0, 1.0)
+        // temporal smoothing so a single bad frame never flips the gate
+        emaSim = 0.6 * emaSim + 0.4 * raw
+        return emaSim
     }
 
     override fun exportState(): String {

@@ -1,189 +1,109 @@
 package com.manc.voice.audio
 
 import android.content.Context
-import com.manc.voice.audio.dsp.*
-import com.manc.voice.audio.ml.*
+import com.manc.voice.audio.dsp.CleanChain
+import com.manc.voice.audio.ml.OnnxDenoiser
+import com.manc.voice.audio.ml.OnnxVoiceEmbedder
 import kotlin.math.log10
-import kotlin.math.max
-import kotlin.math.sqrt
 
 /**
- * The full outgoing-voice pipeline, operating on 16 kHz mono float blocks:
+ * The full outgoing-voice pipeline on 16 kHz mono float blocks:
  *
- *   STFT -> noise estimate -> VAD -> spectral denoise gain
- *        -> voice features -> owner similarity (model-free, optionally ONNX)
- *        -> voice-lock gate (scalar) -> combine -> ISTFT -> limiter
+ *   [GTCRN neural denoiser, if bundled] -> CleanChain (noise estimate, VAD,
+ *   spectral denoise fallback, voice features on the denoised signal, owner
+ *   similarity, voice-lock gate, limiter)  +  optional neural speaker embedder
+ *   blended into the similarity.
  *
- * Design goals: never crash, always produce audio, and degrade cleanly when
- * optional ONNX models are absent.
+ * Never crashes, always produces audio, degrades cleanly without models.
  */
 class AudioEngine(
     private val appCtx: Context,
     val sampleRate: Int = 16000,
     val config: EngineConfig = EngineConfig()
 ) {
-    private val frameSize = 256
-    private val hop = frameSize / 2               // 128 samples = 8 ms @16k
-    private val frameMs = 1000.0 * hop / sampleRate
-    private val stft = Stft(frameSize)
-    private val bins = stft.bins
-    private val noiseEst = NoiseEstimator(bins)
-    private val vad = Vad(sampleRate, bins, frameSize)
-    private val denoiser = SpectralDenoiser(bins)
-    private val gate = VoiceLockGate(frameMs)
-    private val limiter = Limiter()
-    private val features = VoiceFeatures(sampleRate, bins, frameSize)
-    private val profile: VoiceProfile = HeuristicVoiceProfile(features.bands)
-
+    private val chain = CleanChain(sampleRate, 256)
     private val onnxEmbedder: OnnxVoiceEmbedder? = OnnxVoiceEmbedder.tryLoad(appCtx)
+    private val onnxDenoiser: OnnxDenoiser? = OnnxDenoiser.tryLoad(appCtx)
+    private var denoisedBuf = FloatArray(0)
 
-    private val power = DoubleArray(bins)
-    private val shape = DoubleArray(features.bands)
-    private val gainBuf = DoubleArray(bins)
-    private val pitchRing = FloatArray(512)
-    private var pitchPos = 0
-
-    // sliding 1 s window for the optional ONNX embedder
+    // sliding 1 s window of RAW input for the embedder (trained on natural speech)
     private val embWindow = FloatArray(sampleRate)
     private var embPos = 0
-    private var hopsSinceEmbed = 0
-    private var onnxSimPrior = 1.0
+    private var samplesSinceEmbed = 0
+    private var onnxSimPrior: Double? = null
 
     @Volatile var meters = Meters(); private set
-    @Volatile var nearFieldDb: Float = 6f    // supplied by the engine host (phone-mic cue)
+    @Volatile var nearFieldDb: Float = 6f
 
     private var enrolling = false
 
-    fun setStrength(s: Float) { denoiser.strength = s.toDouble(); gate.strength = s.toDouble() }
-
-    fun beginEnroll() { enrolling = true; profile.beginEnroll(); onnxEmbedder?.beginEnroll() }
+    fun beginEnroll() { enrolling = true; chain.beginEnroll(); onnxEmbedder?.beginEnroll(); onnxSimPrior = null }
     fun finishEnroll(): Boolean {
         enrolling = false
-        val a = profile.finishEnroll()
+        val a = chain.finishEnroll()
         val b = onnxEmbedder?.finishEnroll() ?: false
         return a || b
     }
-    fun isEnrolled() = profile.isEnrolled || (onnxEmbedder?.isEnrolled == true)
-    fun exportProfile(): String = profile.exportState()
-    fun importProfile(s: String) { profile.importState(s) }
+    fun isEnrolled() = chain.profile.isEnrolled || (onnxEmbedder?.isEnrolled == true)
+    fun exportProfile(): String = chain.profile.exportState()
+    fun importProfile(s: String) { chain.profile.importState(s) }
 
-    /**
-     * Process [n] input samples (16 kHz mono) into [out]. Returns samples written.
-     * out must be at least n long. n should be a multiple of hop for exactness;
-     * remainder is buffered internally by the STFT.
-     */
     fun process(input: FloatArray, n: Int, out: FloatArray): Int {
-        gate.enabled = config.voiceLockEnabled
-        gate.nearFieldEnabled = config.nearFieldEnabled
-        setStrength(config.strength)
-        limiter.makeupGain = config.makeupGain.toDouble()
-
         if (config.bypass) {
             System.arraycopy(input, 0, out, 0, n)
-            updateMeters(input, n, input, n, 0.0, 1.0, 1.0)
+            publish(input, n, out, n, 0.0, 1.0, 1.0)
             return n
         }
+        chain.strength = config.strength.toDouble()
+        chain.hardMute = config.hardMute
+        chain.voiceLock = config.voiceLockEnabled
+        chain.nearFieldEnabled = config.nearFieldEnabled
+        chain.nearFieldDb = nearFieldDb.toDouble()
+        chain.makeupGain = config.makeupGain.toDouble()
+        chain.enrolling = enrolling
 
-        var produced = 0
-        var off = 0
-        var lastSpeech = 0.0; var lastSim = 1.0; var lastGate = 1.0
-        while (off + hop <= n) {
-            // feed pitch ring
-            for (i in 0 until hop) { pitchRing[pitchPos] = input[off + i]; pitchPos = (pitchPos + 1) % pitchRing.size }
-            // feed embedder window
-            for (i in 0 until hop) { embWindow[embPos] = input[off + i]; embPos = (embPos + 1) % embWindow.size }
+        // 1) neural denoise first when available (then the spectral fallback is off)
+        val useNeural = onnxDenoiser != null && config.denoiseEnabled
+        val src: FloatArray = if (useNeural) {
+            if (denoisedBuf.size < n) denoisedBuf = FloatArray(n)
+            onnxDenoiser!!.process(input, n, denoisedBuf)
+            denoisedBuf
+        } else input
+        chain.spectralDenoise = config.denoiseEnabled && !useNeural
 
-            stft.analyze(input, off)
-            for (k in 0 until bins) power[k] = stft.mag[k] * stft.mag[k]
-
-            val speech = vad.process(power, noiseEst.noisePower())
-            noiseEst.update(power, speech)
-
-            // denoise gain
-            if (config.denoiseEnabled) {
-                val g = denoiser.computeGain(power, noiseEst.noisePower())
-                System.arraycopy(g, 0, gainBuf, 0, bins)
-            } else {
-                for (k in 0 until bins) gainBuf[k] = 1.0
+        // 2) neural speaker similarity on raw audio every ~200 ms
+        onnxEmbedder?.let { emb ->
+            for (i in 0 until n) { embWindow[embPos] = input[i]; embPos = (embPos + 1) % embWindow.size }
+            samplesSinceEmbed += n
+            if (samplesSinceEmbed >= sampleRate / 5) {
+                samplesSinceEmbed = 0
+                val win = FloatArray(embWindow.size)
+                var idx = embPos
+                for (i in win.indices) { win[i] = embWindow[idx]; idx = (idx + 1) % embWindow.size }
+                if (enrolling) emb.addEnrollWindow(win)
+                else if (emb.isEnrolled) emb.similarity(win)?.let { onnxSimPrior = it }
             }
-
-            // voice features + owner similarity
-            features.spectralShape(stft.mag, shape)
-            val f0 = features.pitch(orderedPitch(), pitchRing.size)
-            val voiced = f0 > 0
-            var sim = profile.similarity(shape, f0, voiced)
-
-            if (enrolling) {
-                profile.addEnrollFrame(shape, f0, voiced)
-            }
-
-            // optional ONNX embedder as a slow prior
-            onnxEmbedder?.let { emb ->
-                hopsSinceEmbed++
-                val stride = (0.2 / (frameMs / 1000.0)).toInt().coerceAtLeast(1) // ~200 ms
-                if (hopsSinceEmbed >= stride) {
-                    hopsSinceEmbed = 0
-                    val win = orderedEmbWindow()
-                    if (enrolling) emb.addEnrollWindow(win)
-                    else emb.similarity(win)?.let { onnxSimPrior = it }
-                }
-                if (emb.isEnrolled && !enrolling) {
-                    sim = 0.5 * sim + 0.5 * onnxSimPrior
-                }
-            }
-
-            val gateGain = gate.process(speech, sim, nearFieldDb.toDouble())
-
-            for (k in 0 until bins) gainBuf[k] = gainBuf[k] * gateGain
-            stft.synthesize(gainBuf, out, off)
-
-            lastSpeech = speech; lastSim = sim; lastGate = gateGain
-            produced += hop
-            off += hop
         }
-        // copy any remainder straight through (keeps length), rare if n multiple of hop
-        if (produced < n) {
-            for (i in produced until n) out[i] = 0f
-        }
-        limiter.process(out, produced)
-        updateMeters(input, n, out, produced, lastSpeech, lastSim, lastGate)
+        chain.externalSimilarity = if (!enrolling && onnxEmbedder?.isEnrolled == true) onnxSimPrior else null
+
+        // 3) gate + fallback denoise + limiter
+        val produced = chain.process(src, n, out)
+        publish(input, n, out, produced, chain.lastSpeech, chain.lastSim, chain.lastGate)
         return produced
     }
 
-    private fun orderedPitch(): FloatArray {
-        // return pitchRing rotated so it's time-ordered
-        val tmp = FloatArray(pitchRing.size)
-        var idx = pitchPos
-        for (i in pitchRing.indices) { tmp[i] = pitchRing[idx]; idx = (idx + 1) % pitchRing.size }
-        return tmp
-    }
-
-    private fun orderedEmbWindow(): FloatArray {
-        val tmp = FloatArray(embWindow.size)
-        var idx = embPos
-        for (i in embWindow.indices) { tmp[i] = embWindow[idx]; idx = (idx + 1) % embWindow.size }
-        return tmp
-    }
-
-    private fun updateMeters(inp: FloatArray, nIn: Int, outp: FloatArray, nOut: Int,
-                             speech: Double, sim: Double, g: Double) {
+    private fun publish(inp: FloatArray, nIn: Int, outp: FloatArray, nOut: Int, speech: Double, sim: Double, g: Double) {
         meters = Meters(
-            inputRms = rms(inp, nIn),
-            outputRms = rms(outp, nOut),
+            inputRms = CleanChain.rms(inp, nIn),
+            outputRms = CleanChain.rms(outp, nOut),
             speechProb = speech.toFloat(),
             ownerSimilarity = sim.toFloat(),
             gate = g.toFloat(),
             nearFieldDb = nearFieldDb,
             usingOnnxEmbedder = (onnxEmbedder?.isEnrolled == true),
+            usingOnnxDenoiser = (onnxDenoiser != null),
             locked = config.voiceLockEnabled && isEnrolled()
         )
-    }
-
-    private fun rms(x: FloatArray, n: Int): Float {
-        if (n <= 0) return 0f
-        var s = 0.0
-        for (i in 0 until n) s += x[i] * x[i]
-        return sqrt(s / n).toFloat()
     }
 
     companion object {

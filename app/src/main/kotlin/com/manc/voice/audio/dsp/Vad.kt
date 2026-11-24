@@ -5,8 +5,8 @@ import kotlin.math.max
 
 /**
  * Lightweight voice-activity detector: a-posteriori SNR over the speech band
- * plus spectral-flatness check (noise is flat, voiced speech is peaky).
- * Produces a smoothed speech probability in [0,1].
+ * plus spectral-flatness (noise is flat, voiced speech is peaky), with an
+ * absolute energy floor. Rises fast, falls slow. Output in [0,1].
  */
 class Vad(private val sampleRate: Int, private val bins: Int, private val frameSize: Int) {
     private var prob = 0.0
@@ -20,8 +20,7 @@ class Vad(private val sampleRate: Int, private val bins: Int, private val frameS
         var count = 0
         for (k in loBin..hiBin) {
             val n = max(noise[k], 1e-8)
-            val snr = power[k] / n
-            snrAccum += snr
+            snrAccum += power[k] / n
             val p = max(power[k], 1e-10)
             geo += ln(p)
             arith += p
@@ -30,12 +29,15 @@ class Vad(private val sampleRate: Int, private val bins: Int, private val frameS
         val meanSnr = snrAccum / count
         geo = Math.exp(geo / count)
         arith /= count
-        val flatness = (geo / max(arith, 1e-10)).coerceIn(0.0, 1.0) // ~1 flat (noise), low = tonal (voice)
-        val snrScore = (ln(max(meanSnr, 1e-3)) / ln(8.0)).coerceIn(0.0, 1.0)
+        if (arith < 1e-7) {                       // essentially silent frame
+            prob *= 0.7
+            return prob
+        }
+        val flatness = (geo / max(arith, 1e-10)).coerceIn(0.0, 1.0)
+        val snrScore = (ln(max(meanSnr, 1e-3)) / ln(6.0)).coerceIn(0.0, 1.0)
         val tonal = (1.0 - flatness)
-        val instant = (0.6 * snrScore + 0.4 * tonal).coerceIn(0.0, 1.0)
-        // asymmetric smoothing: rise fast, fall slow
-        val a = if (instant > prob) 0.6 else 0.15
+        val instant = (0.5 * snrScore + 0.5 * tonal).coerceIn(0.0, 1.0)
+        val a = if (instant > prob) 0.7 else 0.12
         prob += a * (instant - prob)
         return prob
     }

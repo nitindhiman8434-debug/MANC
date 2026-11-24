@@ -31,6 +31,15 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
+      - name: Fetch neural models (GTCRN denoiser + wespeaker CAM++ speaker embedder)
+        run: |
+          mkdir -p app/src/main/assets/models
+          curl -fsSL -o app/src/main/assets/models/denoiser.onnx \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx"
+          curl -fsSL -o app/src/main/assets/models/speaker.onnx \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM%2B%2B.onnx"
+          ls -la app/src/main/assets/models
+
       - name: Grant gradlew
         run: chmod +x ./gradlew
 

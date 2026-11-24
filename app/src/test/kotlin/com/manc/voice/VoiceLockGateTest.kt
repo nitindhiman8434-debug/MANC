@@ -9,8 +9,9 @@ import kotlin.random.Random
 /**
  * Port of the offline tuning simulation: a turn-taking timeline of owner /
  * bystander / silence segments (seconds-scale at 100 fps), driving the gate with
- * simulated owner-similarity. Asserts the owner passes near unity while the
- * bystander is strongly attenuated. Mirrors the numbers in docs/ARCHITECTURE.md.
+ * simulated owner-similarity on the voiceprint's measured scale (owner ~0.8 clean,
+ * bystander ~0.2). Asserts the owner passes near unity while the bystander is
+ * strongly attenuated.
  */
 class VoiceLockGateTest {
     @Test fun ownerPassesBystanderMuted() {
@@ -25,7 +26,7 @@ class VoiceLockGateTest {
                 repeat(dur) {
                     val (vad, sim) = when (st) {
                         1 -> 0.95 to (0.82 + rng.nextDouble(-0.08, 0.08))
-                        2 -> 0.95 to (0.38 + rng.nextDouble(-0.10, 0.10))
+                        2 -> 0.95 to (0.18 + rng.nextDouble(-0.10, 0.10))   // measured bystander scale ~0.0-0.35
                         else -> 0.25 to (0.20 + rng.nextDouble(-0.10, 0.10))
                     }
                     val g = gate.process(vad, sim.coerceIn(0.0, 1.0), 6.0)

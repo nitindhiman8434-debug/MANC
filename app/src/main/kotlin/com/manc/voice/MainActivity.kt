@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.manc.voice.service.VoiceService
+import com.manc.voice.data.Prefs
 import com.manc.voice.shizuku.ShizukuManager
 import com.manc.voice.ui.screens.*
 import com.manc.voice.ui.theme.MancTheme
@@ -26,10 +27,23 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ShizukuManager.init(applicationContext)
+        // restore persisted settings
+        val snap = Prefs.loadBlocking(applicationContext)
+        snap.strength?.let { Controller.config.strength = it }
+        snap.voiceprint?.let { Controller.enrolledProfile = it; Controller.setEnrolled(true) }
+        Controller.autoStart = snap.autoStart
 
         setContent {
             MancTheme {
                 var screen by remember { mutableStateOf(Screen.HOME) }
+                val shz by ShizukuManager.state.collectAsState()
+                val run by Controller.run.collectAsState()
+                // Just works: once the bridge is connected and permissions are already granted,
+                // start cleaning automatically (no extra taps).
+                LaunchedEffect(shz) {
+                    if (shz == ShizukuManager.State.CONNECTED && Controller.autoStart &&
+                        run == Controller.Run.STOPPED && hasMicPermission()) startService()
+                }
 
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     when (screen) {
@@ -60,6 +74,11 @@ class MainActivity : ComponentActivity() {
     private val micLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         pendingAction?.invoke(); pendingAction = null
     }
+
+    private fun hasMicPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED &&
+        (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
 
     private fun ensureMicThen(action: () -> Unit) {
         val needed = mutableListOf<String>()

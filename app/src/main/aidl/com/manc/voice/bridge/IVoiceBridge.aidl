@@ -31,5 +31,10 @@ interface IVoiceBridge {
     String startCellularRedirect(in ParcelFileDescriptor cleanPcmReadEnd, int sampleRate);
     void stopCellularRedirect();
 
+    // Default mode: inject the cleaned voice into EVERY recorder (all call presets,
+    // no UID filter) and, when the device allows it, into the cellular uplink too.
+    // Returns JSON describing which sinks are active.
+    String startCleanEverywhere(in ParcelFileDescriptor cleanPcmReadEnd, int sampleRate);
+
     int getProtocolVersion();
 }

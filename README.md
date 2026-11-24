@@ -3,9 +3,10 @@
 Clean, lock, and send only **your** voice on Android calls — works with any
 earbuds, cleaning happens on the phone.
 
-MANC captures your microphone, removes background noise, and (optionally) opens
-the mic **only when it hears you**, so bystanders and room noise are muted. The
-cleaned audio replaces your microphone inside the calling app. Everything runs
+MANC captures your microphone, removes background noise with a neural denoiser,
+and opens the mic **only when it hears you**, so bystanders and room noise are
+fully muted. One tap: the cleaned audio replaces your microphone in **every**
+app that uses it, and in cellular calls on phones that allow it. Everything runs
 on-device. It is free and open source.
 
 ## What works where
@@ -36,9 +37,10 @@ holds those permissions; the bridge does, and only while you run it.
 
 ## Use
 
-1. Pick your calling app (App calls mode) or open Cellular Lab (Cellular mode).
-2. Tap **Teach the app my voice** and talk for ~5 seconds once (enables voice-lock).
-3. Tap **Start cleaning**, then make your call.
+1. Tap **Start cleaning** once. It cleans everywhere by default (all apps, plus
+   cellular where the phone allows it) and auto-starts next time the bridge connects.
+2. Tap **Teach the app my voice** and talk for ~5 seconds once (voice-lock).
+3. Make your call. Advanced: limit cleaning to one app from the Home screen.
 
 ## Build
 
@@ -49,14 +51,15 @@ holds those permissions; the bridge does, and only while you run it.
 
 CI builds the APK on every push and attaches it to the `ci-latest` prerelease.
 
-## Optional neural models
+## Neural models
 
-The app ships a working model-free pipeline. To use neural upgrades, drop ONNX
-models into `app/src/main/assets/models/`:
+CI bundles two models into the APK (`app/src/main/assets/models/`):
 
-- `speaker.onnx` — a speaker-embedding model (wespeaker / 3D-Speaker CAM++ export)
-  for a stronger voice-lock.
-- `denoiser.onnx` — a streaming denoiser (e.g. GTCRN) [slot reserved].
+- `denoiser.onnx` — GTCRN streaming denoiser (background removal, real-time on CPU).
+- `speaker.onnx` — wespeaker CAM++ speaker embedder (robust "only my voice").
+
+The app also works with no models through a tuned model-free pipeline; measured
+results and its limits are in `docs/ARCHITECTURE.md` §8-9.
 
 See `docs/ARCHITECTURE.md` for the full engineering audit, the signal-chain
 analysis, measured voice-lock numbers, and the latency budget.
