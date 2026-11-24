@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">MANC Voice</string>
+    <string name="notif_channel">Voice processing</string>
+    <string name="notif_running">MANC is cleaning your microphone</string>
+</resources>
