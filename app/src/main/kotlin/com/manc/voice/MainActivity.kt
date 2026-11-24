@@ -34,12 +34,17 @@ class MainActivity : ComponentActivity() {
         snap.voiceprint?.let { Controller.enrolledProfile = it; Controller.setEnrolled(true) }
         snap.voiceprintNeural?.let { Controller.enrolledNeural = it }
         Controller.autoStart = snap.autoStart
+        micGrantedState.value = hasMicPermission()
 
         setContent {
             MancTheme {
-                var screen by remember { mutableStateOf(Screen.HOME) }
+                // first run (or anything missing) lands on the guided setup, otherwise Home
+                var screen by remember {
+                    mutableStateOf(if (hasMicPermission() && Controller.enrolled.value) Screen.HOME else Screen.SETUP)
+                }
                 val shz by ShizukuManager.state.collectAsState()
                 val run by Controller.run.collectAsState()
+                val micGranted by micGrantedState
                 // Just works: once the bridge is connected and permissions are already granted,
                 // start cleaning automatically (no extra taps).
                 LaunchedEffect(shz) {
@@ -57,7 +62,12 @@ class MainActivity : ComponentActivity() {
                             onStart = { ensureMicThen { startService() } },
                             onStop = { stopService() }
                         )
-                        Screen.SETUP -> SetupScreen(onBack = { screen = Screen.HOME })
+                        Screen.SETUP -> SetupScreen(
+                            onBack = { screen = Screen.HOME },
+                            micGranted = micGranted,
+                            onRequestMic = { ensureMicThen { micGrantedState.value = true } },
+                            onDone = { screen = Screen.HOME }
+                        )
                         Screen.APPS -> AppsScreen(onBack = { screen = Screen.HOME })
                         Screen.ENROLL -> EnrollScreen(onBack = { screen = Screen.HOME })
                         Screen.CELLULAR -> CellularScreen(onBack = { screen = Screen.HOME })
@@ -70,11 +80,15 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         ShizukuManager.refresh(applicationContext)
+        micGrantedState.value = hasMicPermission()
     }
 
+    private val micGrantedState = mutableStateOf(false)
     private var pendingAction: (() -> Unit)? = null
     private val micLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        pendingAction?.invoke(); pendingAction = null
+        micGrantedState.value = hasMicPermission()
+        if (micGrantedState.value) pendingAction?.invoke()
+        pendingAction = null
     }
 
     private fun hasMicPermission(): Boolean =

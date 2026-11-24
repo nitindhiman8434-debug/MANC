@@ -1,5 +1,6 @@
 package com.manc.voice.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -8,15 +9,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import com.manc.voice.data.Prefs
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.manc.voice.Controller
+import com.manc.voice.data.Prefs
 import com.manc.voice.shizuku.ShizukuManager
 import com.manc.voice.ui.components.LevelBar
 import com.manc.voice.ui.components.SectionCard
-import com.manc.voice.ui.components.StatusDot
 
+/**
+ * One screen, one button. Everything is on by default at full strength and cleans
+ * everywhere; the rare knobs live under "Advanced".
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -37,11 +41,13 @@ fun HomeScreen(
     val ctx = LocalContext.current
 
     var strength by remember { mutableStateOf(Controller.config.strength) }
+    var neuralWet by remember { mutableStateOf(Controller.config.neuralWet) }
     var voiceLock by remember { mutableStateOf(Controller.config.voiceLockEnabled) }
     var denoise by remember { mutableStateOf(Controller.config.denoiseEnabled) }
-    var neuralWet by remember { mutableStateOf(Controller.config.neuralWet) }
+    var advanced by remember { mutableStateOf(false) }
 
     val running = run == Controller.Run.RUNNING || run == Controller.Run.STARTING
+    val bridgeOk = shz == ShizukuManager.State.CONNECTED
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -49,95 +55,103 @@ fun HomeScreen(
     ) {
         Spacer(Modifier.height(8.dp))
         Text("MANC Voice", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text("Clean outgoing voice for any call", style = MaterialTheme.typography.bodyMedium,
+        Text("Only your voice reaches the other side", style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(16.dp))
 
-        // Big start/stop
+        if (!bridgeOk || !enrolled) {
+            // something is missing: one clear call to action, nothing else to decide
+            SectionCard {
+                Text(if (!bridgeOk) "Finish the one-time setup to start." else "Teach it your voice once so it opens only for you.",
+                    style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(10.dp))
+                Button(onClick = onSetup, Modifier.fillMaxWidth().height(52.dp)) { Text("Finish setup") }
+            }
+        }
+
         Button(
             onClick = { if (running) onStop() else onStart() },
+            enabled = bridgeOk,
             modifier = Modifier.fillMaxWidth().height(64.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = if (running) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
             )
         ) {
-            Text(if (running) "Stop" else "Start cleaning", style = MaterialTheme.typography.titleMedium)
+            Text(if (running) "Stop" else "Start", style = MaterialTheme.typography.titleMedium)
         }
-        if (status.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            when {
+                running && sinks.isNotEmpty() -> "Protecting your voice everywhere ($sinks)"
+                running -> "Protecting your voice"
+                status.isNotEmpty() -> status
+                else -> "Starts automatically when the bridge connects"
+            },
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         SectionCard("Live") {
-            LevelBar("Your input", meters.inputRms.coerceIn(0f, 1f) * 4f)
-            LevelBar("Sent to the other side", meters.outputRms.coerceIn(0f, 1f) * 4f,
+            LevelBar("You", meters.inputRms.coerceIn(0f, 1f) * 4f)
+            LevelBar("What the other side hears", meters.outputRms.coerceIn(0f, 1f) * 4f,
                 tint = MaterialTheme.colorScheme.secondary)
             Spacer(Modifier.height(6.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Voice match: ${(meters.ownerSimilarity * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelMedium)
-                Text(if (meters.gate > 0.5f) "Mic OPEN" else "Muted",
+                Text("Voice match ${(meters.ownerSimilarity * 100).toInt()}%", style = MaterialTheme.typography.labelMedium)
+                Text(if (meters.gate > 0.5f) "Mic open" else "Muted",
                     style = MaterialTheme.typography.labelMedium,
                     color = if (meters.gate > 0.5f) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (meters.usingOnnxEmbedder) Text("Using neural voiceprint", style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary)
+            if (meters.usingOnnxDenoiser || meters.usingOnnxEmbedder) {
+                Text(buildString {
+                    if (meters.usingOnnxDenoiser) append("Neural denoiser")
+                    if (meters.usingOnnxDenoiser && meters.usingOnnxEmbedder) append(" + ")
+                    if (meters.usingOnnxEmbedder) append("neural voiceprint")
+                }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            }
         }
 
-        SectionCard("Where it cleans") {
-            Text("Everywhere, automatically: every app that uses your microphone gets the cleaned voice, " +
-                    "and cellular calls too on phones that allow it.",
-                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (running && sinks.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                Text("Active now: $sinks", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
-            }
-            Spacer(Modifier.height(8.dp))
-            TextButton(onClick = {
-                Controller.setMode(Controller.Mode.VOIP); onApps()
-            }) { Text(target?.let { "Advanced: limited to $it (tap to change)" } ?: "Advanced: limit to one app") }
-            if (target != null) {
-                TextButton(onClick = { Controller.setTarget(null); Controller.setMode(Controller.Mode.AUTO) }) {
-                    Text("Back to everywhere")
+        // ---- Advanced (collapsed by default) ----
+        Card(
+            Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { advanced = !advanced },
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Advanced", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(if (advanced) "Hide" else "Show", color = MaterialTheme.colorScheme.primary)
+                }
+                if (advanced) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Only my voice (voice-lock)", Modifier.weight(1f))
+                        Switch(checked = voiceLock, onCheckedChange = { voiceLock = it; Controller.config.voiceLockEnabled = it })
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Noise removal", Modifier.weight(1f))
+                        Switch(checked = denoise, onCheckedChange = { denoise = it; Controller.config.denoiseEnabled = it })
+                    }
+                    Text("Strength", style = MaterialTheme.typography.labelMedium)
+                    Slider(value = strength, onValueChange = { strength = it; Controller.config.strength = it },
+                        onValueChangeFinished = { Prefs.saveStrengthAsync(ctx, strength) }, valueRange = 0f..1f)
+                    if (meters.usingOnnxDenoiser) {
+                        Text("Neural depth (lower if your voice sounds thin)", style = MaterialTheme.typography.labelMedium)
+                        Slider(value = neuralWet, onValueChange = { neuralWet = it; Controller.config.neuralWet = it },
+                            onValueChangeFinished = { Prefs.saveNeuralWetAsync(ctx, neuralWet) }, valueRange = 0.3f..1f)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text("Cleans everywhere by default: every app that uses the microphone, plus cellular calls on phones that allow it.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { Controller.setMode(Controller.Mode.VOIP); onApps() }) {
+                        Text(target?.let { "Limited to $it (tap to change)" } ?: "Limit to one app")
+                    }
+                    if (target != null) {
+                        TextButton(onClick = { Controller.setTarget(null); Controller.setMode(Controller.Mode.AUTO) }) { Text("Back to everywhere") }
+                    }
+                    TextButton(onClick = onEnroll) { Text(if (enrolled) "Re-teach my voice" else "Teach my voice") }
+                    TextButton(onClick = onCellular) { Text("Cellular Lab (device check)") }
+                    TextButton(onClick = onSetup) { Text("Setup details") }
                 }
             }
-        }
-
-        SectionCard("Controls") {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Only my voice (voice-lock)", Modifier.weight(1f))
-                Switch(checked = voiceLock, onCheckedChange = { voiceLock = it; Controller.config.voiceLockEnabled = it })
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Noise removal", Modifier.weight(1f))
-                Switch(checked = denoise, onCheckedChange = { denoise = it; Controller.config.denoiseEnabled = it })
-            }
-            Spacer(Modifier.height(6.dp))
-            Text("Strength", style = MaterialTheme.typography.labelMedium)
-            Slider(value = strength, onValueChange = { strength = it; Controller.config.strength = it }, onValueChangeFinished = { Prefs.saveStrengthAsync(ctx, strength) }, valueRange = 0f..1f)
-            if (meters.usingOnnxDenoiser) {
-                Text("Neural depth (lower if your voice sounds thin)", style = MaterialTheme.typography.labelMedium)
-                Slider(value = neuralWet, onValueChange = { neuralWet = it; Controller.config.neuralWet = it }, onValueChangeFinished = { Prefs.saveNeuralWetAsync(ctx, neuralWet) }, valueRange = 0.3f..1f)
-            }
-            Spacer(Modifier.height(4.dp))
-            OutlinedButton(onClick = onEnroll, Modifier.fillMaxWidth()) {
-                Text(if (enrolled) "Re-teach my voice" else "Teach the app my voice")
-            }
-        }
-
-        SectionCard("Setup") {
-            StatusDot(shz == ShizukuManager.State.CONNECTED,
-                when (shz) {
-                    ShizukuManager.State.CONNECTED -> "Shizuku bridge connected"
-                    ShizukuManager.State.NEED_PERMISSION -> "Shizuku needs permission"
-                    ShizukuManager.State.CONNECTING -> "Connecting to bridge..."
-                    ShizukuManager.State.UNAVAILABLE -> "Shizuku not running"
-                    ShizukuManager.State.ERROR -> "Bridge error"
-                })
-            Spacer(Modifier.height(8.dp))
-            Button(onClick = onSetup, Modifier.fillMaxWidth()) { Text("Open setup") }
-            Spacer(Modifier.height(6.dp))
-            OutlinedButton(onClick = onCellular, Modifier.fillMaxWidth()) { Text("Cellular Lab (device check)") }
         }
         Spacer(Modifier.height(24.dp))
     }

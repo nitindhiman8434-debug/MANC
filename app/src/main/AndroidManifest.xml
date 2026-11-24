@@ -15,6 +15,7 @@
 
     <!-- We list the apps we can target as a virtual mic (Android 11+ package visibility). -->
     <queries>
+        <package android:name="moe.shizuku.privileged.api" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
         </intent>
