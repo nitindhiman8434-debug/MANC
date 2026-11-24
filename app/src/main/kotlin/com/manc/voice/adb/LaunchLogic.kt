@@ -114,7 +114,8 @@ object LaunchLogic {
             "echo \"--- provider ping ---\"",
             "content call --uri content://$pkg.bridge --method $PING_METHOD 2>&1",
             "echo \"--- logcat ---\"",
-            "logcat -d -t 800 2>/dev/null | grep -E \"BridgeServer|manc_voice|AndroidRuntime|avc: +denied.*shell\" | tail -n 40",
+            // stack frames are dropped: a deep trace would otherwise crowd out the message lines
+            "logcat -d -t 2000 2>/dev/null | grep -E \"BridgeServer|manc_voice|AndroidRuntime|avc: +denied.*shell\" | grep -vE \"[[:space:]]at [a-zA-Z]\" | tail -n 40",
             "fi",
             "echo $DONE_MARKER"
         ).joinToString("\n") // newlines, not ';' : "cmd &; next" is a shell syntax error

@@ -29,6 +29,13 @@ class VoiceBridgeService : IVoiceBridge.Stub {
     @Suppress("unused")
     constructor(ctx: android.content.Context) { prepare() }
 
+    /**
+     * For MANC's own helper: construct without touching the shell context, so the
+     * Binder can be handed to the app even if the bootstrap is slow or broken. The
+     * audio entry points bootstrap on first use.
+     */
+    constructor(deferBootstrap: Boolean) { if (!deferBootstrap) prepare() }
+
     /** Set when the shell-context bootstrap failed; reported by describeEnvironment(). */
     @Volatile private var initError: String? = null
 
@@ -134,6 +141,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
     }
 
     override fun openMic(sampleRate: Int): Boolean {
+        prepare()
         stopMicCapture()
         val rec = ShellMic.create(sampleRate) ?: return false
         if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); return false }
@@ -183,6 +191,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
     }
 
     override fun openSink(mode: Int, arg: Int, sampleRate: Int): String {
+        prepare()
         return try {
             val pipe = ParcelFileDescriptor.createPipe() // both ends stay in this process
             val report: String = when (mode) {
@@ -300,7 +309,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
         return report.toString()
     }
 
-    override fun probeCellular(): String = CallInterceptProbe.run()
+    override fun probeCellular(): String { prepare(); return CallInterceptProbe.run() }
 
     override fun startCellularRedirect(cleanPcmReadEnd: ParcelFileDescriptor, sampleRate: Int): String {
         return try {

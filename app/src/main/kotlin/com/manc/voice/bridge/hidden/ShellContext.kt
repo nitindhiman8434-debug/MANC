@@ -7,7 +7,7 @@ import android.os.Process
 
 /**
  * Minimal "I am com.android.shell" context used when calling framework audio APIs
- * from the Shizuku shell process. Mirrors the well-known scrcpy approach
+ * from the shell-user process (MANC's helper, or a Shizuku user service). Mirrors the well-known scrcpy approach
  * (Apache-2.0); see NOTICE. Without this, Android 14+ rejects the calls because
  * AttributionSource reports an app package the shell UID does not own.
  */
@@ -17,7 +17,8 @@ object ShellContext {
 
     private val activityThreadClass: Class<*>
     private val activityThread: Any
-    @Volatile private var prepared = false
+    private val bootstrap = OnceGuard()
+    @Volatile private var controllerFilled = false
 
     init {
         activityThreadClass = Class.forName("android.app.ActivityThread")
@@ -50,9 +51,13 @@ object ShellContext {
      * On Samsung devices the system context cannot be created unless the fake
      * ActivityThread has a ConfigurationController (DisplayManagerGlobal asks
      * ActivityThread for its configuration). Must run before anything touches
-     * [systemContext]. Same workaround as scrcpy (issue 4467).
+     * [systemContext]. Same workaround as scrcpy (issue 4467). Idempotent.
      */
-    private fun fillConfigurationController() {
+    @Synchronized
+    private fun ensureConfigurationController() {
+        if (controllerFilled) return
+        controllerFilled = true
+        if (android.os.Build.VERSION.SDK_INT < 31) return
         try {
             val controllerClass = Class.forName("android.app.ConfigurationController")
             val internalClass = Class.forName("android.app.ActivityThreadInternal")
@@ -65,10 +70,30 @@ object ShellContext {
         } catch (e: Throwable) { note("configuration controller", e) }
     }
 
-    @Synchronized
-    fun prepare() {
-        if (prepared) return
-        if (android.os.Build.VERSION.SDK_INT >= 31) fillConfigurationController()
+    /**
+     * The fake "com.android.shell" context. Building it must NOT call [prepare]:
+     * prepare() itself needs this context for the fake Application, and the two
+     * calling each other recursed without end on the first device run.
+     */
+    val context: Context by lazy {
+        ensureConfigurationController()
+        object : ContextWrapper(systemContext) {
+            override fun getPackageName(): String = PACKAGE_NAME
+            override fun getOpPackageName(): String = PACKAGE_NAME
+            override fun getApplicationContext(): Context = this
+            override fun createPackageContext(packageName: String?, flags: Int): Context = this
+            override fun getDeviceId(): Int = 0
+            override fun getAttributionSource(): android.content.AttributionSource {
+                val b = android.content.AttributionSource.Builder(Process.SHELL_UID)
+                b.setPackageName(PACKAGE_NAME)
+                return b.build()
+            }
+        }
+    }
+
+    /** One-time bootstrap of the fake app environment. Safe to call from anywhere, any number of times. */
+    fun prepare() = bootstrap.run {
+        ensureConfigurationController()
         try {
             // fill app info so AttributionSource uses com.android.shell
             val appBindDataClass = Class.forName("android.app.ActivityThread\$AppBindData")
@@ -92,22 +117,5 @@ object ShellContext {
             mInitialApplication.isAccessible = true
             mInitialApplication.set(activityThread, app)
         } catch (e: Throwable) { note("app context", e) }
-        prepared = true
-    }
-
-    val context: Context by lazy {
-        prepare()
-        object : ContextWrapper(systemContext) {
-            override fun getPackageName(): String = PACKAGE_NAME
-            override fun getOpPackageName(): String = PACKAGE_NAME
-            override fun getApplicationContext(): Context = this
-            override fun createPackageContext(packageName: String?, flags: Int): Context = this
-            override fun getDeviceId(): Int = 0
-            override fun getAttributionSource(): android.content.AttributionSource {
-                val b = android.content.AttributionSource.Builder(Process.SHELL_UID)
-                b.setPackageName(PACKAGE_NAME)
-                return b.build()
-            }
-        }
     }
 }

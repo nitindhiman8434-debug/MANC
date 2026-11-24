@@ -50,20 +50,25 @@ object BridgeServer {
         escapeAdbCgroup()
         if (!becomeTheOnlyInstance(pkg)) { log("another instance holds the lock; exiting"); return }
 
+        // The Binder must reach the app whatever happens to the audio bootstrap, so the
+        // service is built without it and the bootstrap gets a bounded head start.
         val service = try {
-            ShellContext.prepare()
-            VoiceBridgeService()
+            VoiceBridgeService(true)
         } catch (e: Throwable) {
             log("bridge init failed: ${describe(e)}"); e.printStackTrace(); return
         }
-        if (ShellContext.notes.isNotBlank()) log("bootstrap notes: " + ShellContext.notes.trim().replace('\n', ' '))
-        // prove the audio stack is reachable before any call needs it
-        try {
-            val am = ShellContext.context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-            log("system context ok; audio mode=${am.mode}")
-        } catch (e: Throwable) {
-            log("system context FAILED: ${describe(e)}")
-        }
+        val boot = Thread({
+            try {
+                ShellContext.prepare()
+                if (ShellContext.notes.isNotBlank()) log("bootstrap notes: " + ShellContext.notes.trim().replace('\n', ' '))
+                val am = ShellContext.context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                log("system context ok; audio mode=${am.mode}")
+            } catch (e: Throwable) {
+                log("bootstrap FAILED: ${describe(e)}")
+            }
+        }, "manc-bootstrap").apply { isDaemon = true; start() }
+        try { boot.join(4000) } catch (_: InterruptedException) { }
+        if (boot.isAlive) log("bootstrap still running after 4 s; delivering anyway")
         log("bridge ready; delivering to $pkg (user $userId)")
 
         Thread({ deliverLoop(pkg, userId, versionCode, apkPath, service) }, "manc-deliver").start()
