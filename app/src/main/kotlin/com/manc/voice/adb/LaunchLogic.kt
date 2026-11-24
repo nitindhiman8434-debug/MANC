@@ -65,12 +65,19 @@ object LaunchLogic {
 
     fun isSafePackage(pkg: String): Boolean = SAFE_PACKAGE.matches(pkg)
 
+    /** The helper prints this once the app has received its Binder. */
+    const val DELIVERED_MARKER = "binder delivered"
+    const val PING_METHOD = "manc_ping"
+
     /**
      * The one shell command run over ADB as the shell user. It lets the app flip
      * wireless debugging by itself from now on, exempts it from battery
      * optimisation, and starts the helper detached from the ADB session so it
-     * keeps running after we disconnect. The helper's early log is echoed back
-     * for diagnostics.
+     * keeps running after we disconnect. It then waits (up to 15 s, with the ADB
+     * session still open) until the helper reports delivery, echoes the helper's
+     * log, and when delivery did not happen adds what is needed to see why:
+     * surviving processes, whether the shell can reach the app's provider at all,
+     * and the relevant crash / SELinux lines from logcat.
      */
     fun buildLaunchScript(pkg: String, versionCode: Int, userId: Int): String {
         require(isSafePackage(pkg)) { "unsafe package name" }
@@ -83,9 +90,18 @@ object LaunchLogic {
             "rm -f $log",
             "S=; command -v setsid >/dev/null 2>&1 && S=setsid",
             "CLASSPATH=\$APK \$S app_process /system/bin --nice-name=$NICE_NAME $SERVER_CLASS $pkg $versionCode $userId >$log 2>&1 </dev/null &",
-            "sleep 2",
-            "echo APK=\$APK",
-            "cat $log 2>/dev/null",
+            "i=0",
+            "while [ \$i -lt 30 ]; do grep -q \"$DELIVERED_MARKER\" $log 2>/dev/null && break; sleep 0.5; i=\$((i+1)); done",
+            "echo \"apk=\$APK setsid=[\$S] waited=\$i\"",
+            "cat $log 2>&1",
+            "if ! grep -q \"$DELIVERED_MARKER\" $log 2>/dev/null; then",
+            "echo \"--- processes ---\"",
+            "ps -A 2>/dev/null | grep -E \"manc_voice|app_process\"",
+            "echo \"--- provider ping ---\"",
+            "content call --uri content://$pkg.bridge --method $PING_METHOD 2>&1",
+            "echo \"--- logcat ---\"",
+            "logcat -d -t 800 2>/dev/null | grep -E \"BridgeServer|manc_voice|AndroidRuntime|avc: +denied.*shell\" | tail -n 40",
+            "fi",
             "echo $DONE_MARKER"
         ).joinToString("\n") // newlines, not ';' : "cmd &; next" is a shell syntax error
     }

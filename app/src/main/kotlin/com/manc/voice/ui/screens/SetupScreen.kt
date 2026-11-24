@@ -13,7 +13,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -47,6 +49,8 @@ fun SetupScreen(onBack: () -> Unit, notifGranted: Boolean, onRequestNotif: () ->
     val enrolled by Controller.enrolled.collectAsState()
     var tick by remember { mutableStateOf(0) }
     var code by remember { mutableStateOf("") }
+    var details by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
     val hasWirelessDebugging = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
     val shizukuInstalled = remember(tick, shz) { isInstalled(ctx, SHIZUKU_PKG) }
 
@@ -145,21 +149,31 @@ fun SetupScreen(onBack: () -> Unit, notifGranted: Boolean, onRequestNotif: () ->
                         }
                     }
 
+                    step == Step.READY_TO_LAUNCH && error.isNotEmpty() -> {
+                        // paired, but the last start attempt failed: no code is needed again
+                        Hint("Pairing is done; the pairing code is not needed again. Starting the helper has not worked yet.")
+                        FullButton("Try again") { AdbLauncher.ensureRunning(ctx, force = true) }
+                    }
+
                     else -> { // WORKING / READY_TO_LAUNCH
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(10.dp))
-                            Hint("Connecting…")
-                        }
-                        if (error.isNotEmpty() && step == Step.READY_TO_LAUNCH) {
-                            Spacer(Modifier.height(8.dp))
-                            FullButton("Try again") { AdbLauncher.ensureRunning(ctx, force = true) }
+                            Hint("Connecting… this can take up to 20 seconds.")
                         }
                     }
                 }
                 if (!bridgeOk && error.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
                     Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    Row {
+                        TextButton(onClick = { details = !details }) { Text(if (details) "Hide details" else "Details") }
+                        TextButton(onClick = { clipboard.setText(AnnotatedString(AdbLauncher.diagnostics(ctx))) }) { Text("Copy report") }
+                    }
+                    if (details) {
+                        Text(AdbLauncher.diagnostics(ctx), style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
                 if (!bridgeOk && hasWirelessDebugging && shizukuInstalled) {
                     TextButton(onClick = {

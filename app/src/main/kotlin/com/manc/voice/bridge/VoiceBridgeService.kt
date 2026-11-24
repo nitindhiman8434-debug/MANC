@@ -24,10 +24,22 @@ import java.io.FileOutputStream
 class VoiceBridgeService : IVoiceBridge.Stub {
 
     @Suppress("unused")
-    constructor() { ShellContext.prepare() }
+    constructor() { prepare() }
 
     @Suppress("unused")
-    constructor(ctx: android.content.Context) { ShellContext.prepare() }
+    constructor(ctx: android.content.Context) { prepare() }
+
+    /** Set when the shell-context bootstrap failed; reported by describeEnvironment(). */
+    @Volatile private var initError: String? = null
+
+    // Never let the bootstrap abort construction: the Binder must reach the app so
+    // that a failure here is reported instead of looking like "the helper did not start".
+    private fun prepare() {
+        try { ShellContext.prepare() } catch (e: Throwable) {
+            initError = (e.cause ?: e).toString()
+            Log.e(TAG, "shell context bootstrap failed", e)
+        }
+    }
 
     @Volatile private var micRecord: AudioRecord? = null
     @Volatile private var micThread: Thread? = null
@@ -37,7 +49,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
     @Volatile private var injThread: Thread? = null
     @Volatile private var injRunning = false
 
-    private val cellular = CellularRedirectEngine()
+    private val cellular by lazy { CellularRedirectEngine() }
 
     // Binder transport state: the mic is read on demand, and cleaned PCM is fed to
     // the existing injector threads through a pipe that stays inside this process.
@@ -59,6 +71,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
         j.put("package", ShellContext.PACKAGE_NAME)
         j.put("sdkInt", Build.VERSION.SDK_INT)
         j.put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
+        initError?.let { j.put("initError", it) }
         return j.toString()
     }
 

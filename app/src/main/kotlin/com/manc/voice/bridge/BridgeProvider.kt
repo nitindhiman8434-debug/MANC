@@ -18,8 +18,10 @@ class BridgeProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
-        if (method != BinderSender.METHOD) return null
         if (!LaunchLogic.isTrustedCaller(Binder.getCallingUid())) throw SecurityException("MANC bridge: caller not allowed")
+        // diagnostics: proves that the shell user can reach this provider at all
+        if (method == LaunchLogic.PING_METHOD) return Bundle().apply { putString("pong", "ok"); putBoolean("bridge", BridgeHub.builtInAlive) }
+        if (method != BinderSender.METHOD) return null
         val binder = extras?.getBinder(BinderSender.KEY_BRIDGE) ?: return null
         BridgeHub.onBuiltInBridge(binder, extras.getInt(BinderSender.KEY_VERSION, 0), extras.getString(BinderSender.KEY_LOG))
         return Bundle().apply { putBinder(BinderSender.KEY_TOKEN, BridgeHub.livenessToken) }

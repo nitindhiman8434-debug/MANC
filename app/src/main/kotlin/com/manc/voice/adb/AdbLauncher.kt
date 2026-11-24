@@ -29,13 +29,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * only as a launcher: pair once with the phone's own wireless debugging, then
  * whenever the helper is not running connect, run one shell command, disconnect.
  * After the first launch the app holds WRITE_SECURE_SETTINGS, so after a reboot
- * it can switch wireless debugging on, relaunch and switch it off by itself.
+ * it can switch wireless debugging on and relaunch by itself.
  */
 object AdbLauncher {
     private const val TAG = "AdbLauncher"
     private const val PREFS = "manc_adb"
     private const val KEY_PAIRED = "paired"
-    private const val KEY_KEEP_WD = "keep_wireless_debugging_on"
     private const val ADB_WIFI_ENABLED = "adb_wifi_enabled"
 
     private val exec = Executors.newSingleThreadExecutor { r -> Thread(r, "manc-adb").apply { isDaemon = true } }
@@ -62,7 +61,6 @@ object AdbLauncher {
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     fun isPaired(ctx: Context) = prefs(ctx).getBoolean(KEY_PAIRED, false)
     private fun setPaired(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_PAIRED, v).apply()
-    fun keepsWirelessDebuggingOn(ctx: Context) = prefs(ctx).getBoolean(KEY_KEEP_WD, false)
 
     fun canToggle(ctx: Context): Boolean =
         ctx.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
@@ -175,44 +173,36 @@ object AdbLauncher {
     }
 
     private fun launch(ctx: Context, firstRun: Boolean) {
-        val cr = ctx.contentResolver
-        var enabledByUs = false
+        // After a reboot the app switches wireless debugging on by itself. It is then
+        // left on: on some phones the helper is stopped together with adbd, and
+        // Android switches it off again on its own when the Wi-Fi network changes.
         if (!wirelessDebuggingOn(ctx) && canToggle(ctx)) {
-            try { Settings.Global.putInt(cr, ADB_WIFI_ENABLED, 1); enabledByUs = true } catch (e: Throwable) { Log.w(TAG, "enable wd: ${e.message}") }
+            try { Settings.Global.putInt(ctx.contentResolver, ADB_WIFI_ENABLED, 1) } catch (e: Throwable) { Log.w(TAG, "enable wd: ${e.message}") }
         }
-        if (!startHelper(ctx)) { failures++; return }
-        failures = 0
-        _error.value = ""
-
-        // Leave wireless debugging the way a careful user would: off. If the helper
-        // turns out to die with it on this phone, remember that and keep it on.
-        if ((enabledByUs || firstRun) && canToggle(ctx) && !keepsWirelessDebuggingOn(ctx)) {
-            try { Settings.Global.putInt(cr, ADB_WIFI_ENABLED, 0) } catch (_: Throwable) { }
-            sleep(4000)
-            if (!BridgeHub.builtInAlive) {
-                prefs(ctx).edit().putBoolean(KEY_KEEP_WD, true).apply()
-                lastLog += "\n[helper stopped when wireless debugging was switched off; keeping it on from now]"
-                try { Settings.Global.putInt(cr, ADB_WIFI_ENABLED, 1) } catch (_: Throwable) { }
-                if (!startHelper(ctx)) failures++
-            }
-        }
+        if (startHelper(ctx)) { failures = 0; _error.value = "" } else failures++
     }
 
-    /** Connect, run the launch command, disconnect, wait for the helper's Binder. */
+    /**
+     * Connect, run the launch command and stay connected while it waits for the
+     * helper to hand over its Binder; then disconnect.
+     */
     private fun startHelper(ctx: Context): Boolean {
         val mgr = AdbManager.getInstance(ctx)
         if (!connect(ctx, mgr)) return false
         val userId = Process.myUid() / 100000
         val script = LaunchLogic.buildLaunchScript(ctx.packageName, BuildConfig.VERSION_CODE, userId)
-        val out = try { runShell(mgr, script, 25_000) } catch (e: Throwable) { "shell error: ${e.message ?: e}" }
+        val out = try { runShell(mgr, script, 45_000) } catch (e: Throwable) { "shell error: ${e.message ?: e}" }
         lastLog = out
         try { mgr.disconnect() } catch (_: Throwable) { }
-        val deadline = SystemClock.elapsedRealtime() + 10_000
+        val deadline = SystemClock.elapsedRealtime() + 6_000
         while (SystemClock.elapsedRealtime() < deadline) {
             if (BridgeHub.builtInAlive) { BridgeHub.refresh(); return true }
             sleep(250)
         }
-        fail("The helper did not start. See Connection diagnostics.")
+        fail(
+            if (out.contains(LaunchLogic.DELIVERED_MARKER)) "The helper started but stopped again. Tap “Details” and send the report."
+            else "The helper did not connect. Tap “Details” and send the report."
+        )
         return false
     }
 
@@ -263,7 +253,7 @@ object AdbLauncher {
                     while (true) {
                         val line = r.readLine() ?: break
                         if (line.trim() == LaunchLogic.DONE_MARKER) break
-                        if (sb.length < 8000) sb.append(line).append('\n')
+                        if (sb.length < 14000) sb.append(line).append('\n')
                     }
                 }
             } catch (e: Throwable) { sb.append("[read end: ").append(e.message).append("]\n") }
@@ -325,8 +315,8 @@ object AdbLauncher {
         if (BridgeHub.source == BridgeHub.Source.BUILT_IN) append(" (helper build ").append(BridgeHub.serverVersion).append(')')
         append('\n')
         append("State: ").append(_step.value).append('\n')
-        append("Paired: ").append(isPaired(ctx)).append(", self-toggle: ").append(canToggle(ctx))
-            .append(", keep wireless debugging on: ").append(keepsWirelessDebuggingOn(ctx)).append('\n')
+        append("Build ").append(BuildConfig.VERSION_CODE).append(", paired: ").append(isPaired(ctx))
+            .append(", self-toggle: ").append(canToggle(ctx)).append('\n')
         append("Android ").append(Build.VERSION.RELEASE).append(" (SDK ").append(Build.VERSION.SDK_INT).append("), ")
             .append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n')
         if (_error.value.isNotEmpty()) append("Last error: ").append(_error.value).append('\n')

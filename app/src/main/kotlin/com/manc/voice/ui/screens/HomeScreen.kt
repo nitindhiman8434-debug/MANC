@@ -8,7 +8,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.manc.voice.BuildConfig
@@ -52,6 +54,7 @@ fun HomeScreen(
     var denoise by remember { mutableStateOf(Controller.config.denoiseEnabled) }
     var advanced by remember { mutableStateOf(false) }
     var diagnostics by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
 
     val running = run == Controller.Run.RUNNING || run == Controller.Run.STARTING
     val protectionOn = run != Controller.Run.STOPPED
@@ -169,7 +172,10 @@ fun HomeScreen(
                         // one screenshot of this block is a complete failure report
                         Text(AdbLauncher.diagnostics(ctx), style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        TextButton(onClick = { AdbLauncher.ensureRunning(ctx, force = true) }) { Text("Reconnect now") }
+                        Row {
+                            TextButton(onClick = { AdbLauncher.ensureRunning(ctx, force = true) }) { Text("Reconnect now") }
+                            TextButton(onClick = { clipboard.setText(AnnotatedString(AdbLauncher.diagnostics(ctx))) }) { Text("Copy report") }
+                        }
                     }
                     Text(
                         "Build ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",

@@ -41,6 +41,11 @@ object BridgeServer {
         val apkPath = System.getenv("CLASSPATH").orEmpty()
         log("start pid=${Process.myPid()} uid=${Process.myUid()} sdk=${Build.VERSION.SDK_INT} pkg=$pkg v=$versionCode")
 
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            log("uncaught in ${t.name}: ${describe(e)}")
+            e.printStackTrace()
+            System.exit(1)
+        }
         try { Looper.prepareMainLooper() } catch (_: Throwable) { }
         escapeAdbCgroup()
         if (!becomeTheOnlyInstance(pkg)) { log("another instance holds the lock; exiting"); return }
@@ -49,8 +54,9 @@ object BridgeServer {
             ShellContext.prepare()
             VoiceBridgeService()
         } catch (e: Throwable) {
-            log("bridge init failed: $e"); return
+            log("bridge init failed: ${describe(e)}"); e.printStackTrace(); return
         }
+        log("bridge ready; delivering to $pkg (user $userId)")
 
         Thread({ deliverLoop(pkg, userId, versionCode, apkPath, service) }, "manc-deliver").start()
         Looper.loop()
@@ -80,14 +86,14 @@ object BridgeServer {
                         token.linkToDeath({ synchronized(wake) { wake.notifyAll() } }, 0)
                         appToken = token
                         misses = 0
-                        log("binder delivered")
+                        log(com.manc.voice.adb.LaunchLogic.DELIVERED_MARKER)
                     } else {
                         misses++
                         log("provider unreachable (try $misses)")
                     }
                 } catch (e: Throwable) {
                     misses++
-                    log("deliver failed (try $misses): ${e.message ?: e}")
+                    log("deliver failed (try $misses): ${describe(e)}")
                 }
             }
             val waitMs = if (appToken != null) 10_000L else minOf(15_000L, 2_000L * (misses.coerceAtLeast(1)))
@@ -143,6 +149,15 @@ object BridgeServer {
             }
         }
         return false
+    }
+
+    /** Reflection wraps the real failure; walk down to it. */
+    private fun describe(e: Throwable): String {
+        val sb = StringBuilder(e.toString())
+        var c = e.cause
+        var depth = 0
+        while (c != null && depth < 4) { sb.append(" <- ").append(c.toString()); c = c.cause; depth++ }
+        return sb.toString()
     }
 
     private fun log(m: String) {

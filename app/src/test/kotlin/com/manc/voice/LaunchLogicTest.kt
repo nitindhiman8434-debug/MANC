@@ -57,6 +57,10 @@ class LaunchLogicTest {
         assertTrue(s.contains("app_process /system/bin --nice-name=manc_voice_bridge com.manc.voice.server.BridgeServer com.manc.voice.debug 42 0"))
         assertTrue(s.contains("</dev/null &"))
         assertTrue(s.trim().endsWith(LaunchLogic.DONE_MARKER))
+        // it waits for the helper's own confirmation and reports when that never comes
+        assertTrue(s.contains("grep -q \"${LaunchLogic.DELIVERED_MARKER}\""))
+        assertTrue(s.contains("content call --uri content://com.manc.voice.debug.bridge --method ${LaunchLogic.PING_METHOD}"))
+        assertTrue(s.contains("logcat -d"))
         // "cmd &; next" is a shell syntax error: commands are separated by newlines
         assertFalse(s.contains("&;"))
         assertFalse(s.contains("& ;"))
