@@ -44,7 +44,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
     // that a failure here is reported instead of looking like "the helper did not start".
     private fun prepare() {
         try { ShellContext.prepare() } catch (e: Throwable) {
-            initError = (e.cause ?: e).toString()
+            initError = BridgeLog.describe(e)
             BridgeLog.e(TAG, "shell context bootstrap failed", e)
         }
     }
@@ -80,7 +80,9 @@ class VoiceBridgeService : IVoiceBridge.Stub {
         j.put("sdkInt", Build.VERSION.SDK_INT)
         j.put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
         initError?.let { j.put("initError", it) }
-        if (ShellContext.notes.isNotBlank()) j.put("notes", ShellContext.notes.trim())
+        // must never throw: this is the call the app uses to find out what went wrong
+        try { if (ShellContext.notes.isNotBlank()) j.put("notes", ShellContext.notes.trim()) }
+        catch (e: Throwable) { j.put("notes", "shell context unusable: ${BridgeLog.describe(e)}") }
         j.put("log", BridgeLog.dump())
         return j.toString()
     }

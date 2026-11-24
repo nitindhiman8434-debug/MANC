@@ -21,6 +21,11 @@ object ShellContext {
     @Volatile private var controllerFilled = false
 
     init {
+        // ActivityThread's constructor creates a Handler, which needs a Looper on the
+        // thread that runs it. The helper initialises this on its main thread, but a
+        // first touch from any other thread (a Binder thread, a worker) must not fail:
+        // that would poison this class for the rest of the process.
+        if (android.os.Looper.myLooper() == null) android.os.Looper.prepare()
         activityThreadClass = Class.forName("android.app.ActivityThread")
         val ctor = activityThreadClass.getDeclaredConstructor()
         ctor.isAccessible = true

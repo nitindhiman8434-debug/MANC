@@ -41,10 +41,12 @@ object BridgeServer {
         val apkPath = System.getenv("CLASSPATH").orEmpty()
         log("start pid=${Process.myPid()} uid=${Process.myUid()} sdk=${Build.VERSION.SDK_INT} pkg=$pkg v=$versionCode")
 
+        val mainThread = Thread.currentThread()
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
             log("uncaught in ${t.name}: ${describe(e)}")
             e.printStackTrace()
-            System.exit(1)
+            // a failed worker or Binder thread must not take the whole helper down
+            if (t === mainThread) System.exit(1)
         }
         try { Looper.prepareMainLooper() } catch (_: Throwable) { }
         escapeAdbCgroup()
@@ -57,21 +59,30 @@ object BridgeServer {
         } catch (e: Throwable) {
             log("bridge init failed: ${describe(e)}"); e.printStackTrace(); return
         }
-        val boot = Thread({
-            try {
-                ShellContext.prepare()
-                if (ShellContext.notes.isNotBlank()) log("bootstrap notes: " + ShellContext.notes.trim().replace('\n', ' '))
-                val am = ShellContext.context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-                log("system context ok; audio mode=${am.mode}")
-            } catch (e: Throwable) {
-                log("bootstrap FAILED: ${describe(e)}")
+        // Delivery must not depend on the audio bootstrap, and the bootstrap must run
+        // on this (main, Looper) thread: ActivityThread creates a Handler. So bootstrap
+        // here, and let a watchdog start delivery anyway if it has not finished in 4 s.
+        val deliveryStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun startDelivery() {
+            if (deliveryStarted.compareAndSet(false, true)) {
+                log("bridge ready; delivering to $pkg (user $userId)")
+                Thread({ deliverLoop(pkg, userId, versionCode, apkPath, service) }, "manc-deliver").start()
             }
-        }, "manc-bootstrap").apply { isDaemon = true; start() }
-        try { boot.join(4000) } catch (_: InterruptedException) { }
-        if (boot.isAlive) log("bootstrap still running after 4 s; delivering anyway")
-        log("bridge ready; delivering to $pkg (user $userId)")
+        }
+        Thread({
+            try { Thread.sleep(4000) } catch (_: InterruptedException) { }
+            if (!deliveryStarted.get()) { log("bootstrap still running after 4 s; delivering anyway"); startDelivery() }
+        }, "manc-watchdog").apply { isDaemon = true; start() }
 
-        Thread({ deliverLoop(pkg, userId, versionCode, apkPath, service) }, "manc-deliver").start()
+        try {
+            ShellContext.prepare()
+            if (ShellContext.notes.isNotBlank()) log("bootstrap notes: " + ShellContext.notes.trim().replace('\n', ' '))
+            val am = ShellContext.context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            log("system context ok; audio mode=${am.mode}")
+        } catch (e: Throwable) {
+            log("bootstrap FAILED: ${describe(e)}")
+        }
+        startDelivery()
         Looper.loop()
     }
 
