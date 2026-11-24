@@ -8,6 +8,7 @@ import android.util.Log
 import com.manc.voice.bridge.cellular.CallInterceptProbe
 import com.manc.voice.bridge.cellular.CellularRedirectEngine
 import com.manc.voice.bridge.hidden.AudioReflect
+import com.manc.voice.bridge.hidden.BridgeLog
 import com.manc.voice.bridge.hidden.ShellContext
 import com.manc.voice.bridge.hidden.ShellMic
 import com.manc.voice.audio.dsp.Resampler
@@ -44,7 +45,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
     private fun prepare() {
         try { ShellContext.prepare() } catch (e: Throwable) {
             initError = (e.cause ?: e).toString()
-            Log.e(TAG, "shell context bootstrap failed", e)
+            BridgeLog.e(TAG, "shell context bootstrap failed", e)
         }
     }
 
@@ -79,6 +80,8 @@ class VoiceBridgeService : IVoiceBridge.Stub {
         j.put("sdkInt", Build.VERSION.SDK_INT)
         j.put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
         initError?.let { j.put("initError", it) }
+        if (ShellContext.notes.isNotBlank()) j.put("notes", ShellContext.notes.trim())
+        j.put("log", BridgeLog.dump())
         return j.toString()
     }
 
@@ -121,7 +124,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
                     }
                     out.write(bytes, 0, m * 2)
                 }
-            } catch (e: Throwable) { Log.w(TAG, "mic loop end: ${e.message}") }
+            } catch (e: Throwable) { BridgeLog.w(TAG, "mic loop end: ${BridgeLog.describe(e)}") }
             finally { try { out.close() } catch (_: Throwable) {}; try { writeEnd.close() } catch (_: Throwable) {} }
         }.apply { isDaemon = true; start() }
         return readEnd
@@ -143,9 +146,10 @@ class VoiceBridgeService : IVoiceBridge.Stub {
     override fun openMic(sampleRate: Int): Boolean {
         prepare()
         stopMicCapture()
-        val rec = ShellMic.create(sampleRate) ?: return false
+        val rec = try { ShellMic.create(sampleRate) } catch (e: Throwable) { BridgeLog.e(TAG, "openMic failed", e); null } ?: return false
         if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); return false }
         val devRate = rec.sampleRate
+        BridgeLog.i(TAG, "mic open at $devRate Hz (wanted $sampleRate)")
         pullRate = sampleRate
         pullShorts = ShortArray(devRate / 50) // 20 ms at the device rate
         pullIn = FloatArray(pullShorts.size)
@@ -156,7 +160,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
             pullRecord = rec
             true
         } catch (e: Throwable) {
-            Log.w(TAG, "openMic start: ${e.message}")
+            BridgeLog.w(TAG, "openMic start: ${BridgeLog.describe(e)}")
             try { rec.release() } catch (_: Throwable) {}
             false
         }
@@ -186,7 +190,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
                 bytes
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "readMic: ${e.message}"); EMPTY
+            BridgeLog.w(TAG, "readMic: ${BridgeLog.describe(e)}"); EMPTY
         }
     }
 
@@ -206,13 +210,14 @@ class VoiceBridgeService : IVoiceBridge.Stub {
             sinkOut = FileOutputStream(pipe[1].fileDescriptor)
             report
         } catch (e: Throwable) {
-            JSONObject().put("started", false).put("reason", e.message ?: e.toString()).toString()
+            BridgeLog.e(TAG, "openSink mode=$mode failed", e)
+            JSONObject().put("started", false).put("reason", BridgeLog.describe(e)).toString()
         }
     }
 
     override fun writeClean(pcm: ByteArray?) {
         if (pcm == null || pcm.isEmpty()) return
-        try { sinkOut?.write(pcm) } catch (e: Throwable) { Log.w(TAG, "writeClean: ${e.message}") }
+        try { sinkOut?.write(pcm) } catch (e: Throwable) { BridgeLog.w(TAG, "writeClean: ${BridgeLog.describe(e)}") }
     }
 
     private fun closeSink() {
@@ -253,7 +258,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
                     }
                     handle.write(shorts, n)
                 }
-            } catch (e: Throwable) { Log.w(TAG, "inj loop end: ${e.message}") }
+            } catch (e: Throwable) { BridgeLog.w(TAG, "inj loop end: ${BridgeLog.describe(e)}") }
             finally { try { input.close() } catch (_: Throwable) {}; try { readEnd.close() } catch (_: Throwable) {} }
         }.apply { isDaemon = true; start() }
         return true
@@ -302,7 +307,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
                     handle?.write(shorts, n)
                     if (cellular.isAttached) cellular.write(shorts, n)
                 }
-            } catch (e: Throwable) { Log.w(TAG, "fanout loop end: ${e.message}") }
+            } catch (e: Throwable) { BridgeLog.w(TAG, "fanout loop end: ${BridgeLog.describe(e)}") }
             finally { try { input.close() } catch (_: Throwable) {}; try { cleanPcmReadEnd.close() } catch (_: Throwable) {} }
         }.apply { isDaemon = true; start() }
         report.put("started", true)

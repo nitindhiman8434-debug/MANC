@@ -356,6 +356,18 @@ object AdbLauncher {
             .append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n')
         if (_error.value.isNotEmpty()) append("Last error: ").append(_error.value).append('\n')
         if (lastLog.isNotBlank()) append("--- last launch ---\n").append(lastLog.trim()).append('\n')
-        if (BridgeHub.serverLog.isNotBlank()) append("--- helper ---\n").append(BridgeHub.serverLog.trim())
+        if (BridgeHub.serverLog.isNotBlank()) append("--- helper ---\n").append(BridgeHub.serverLog.trim()).append('\n')
+        val status = com.manc.voice.Controller.status.value
+        if (status.isNotBlank()) append("Status: ").append(status).append('\n')
+        // what the bridge itself saw (microphone, virtual mic); fetched live over the Binder
+        try {
+            BridgeHub.bridge?.describeEnvironment()?.let { raw ->
+                val j = org.json.JSONObject(raw)
+                append("--- bridge (uid ").append(j.optInt("uid")).append(") ---\n")
+                j.optString("initError").takeIf { it.isNotEmpty() }?.let { append("bootstrap error: ").append(it).append('\n') }
+                j.optString("notes").takeIf { it.isNotEmpty() }?.let { append("bootstrap notes: ").append(it).append('\n') }
+                j.optString("log").takeIf { it.isNotEmpty() }?.let { append(it) }
+            }
+        } catch (e: Throwable) { append("bridge query failed: ").append(e.toString()) }
     }
 }

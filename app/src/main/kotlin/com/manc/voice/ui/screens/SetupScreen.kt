@@ -46,6 +46,7 @@ fun SetupScreen(onBack: () -> Unit, notifGranted: Boolean, onRequestNotif: () ->
     val pairingPort by AdbLauncher.pairingPort.collectAsState()
     val shz by ShizukuManager.state.collectAsState()
     val run by Controller.run.collectAsState()
+    val status by Controller.status.collectAsState()
     val enrolled by Controller.enrolled.collectAsState()
     var tick by remember { mutableStateOf(0) }
     var code by remember { mutableStateOf("") }
@@ -186,12 +187,17 @@ fun SetupScreen(onBack: () -> Unit, notifGranted: Boolean, onRequestNotif: () ->
             StepCard(3, "Teach it your voice (5 s)", enrolled,
                 hint = when {
                     enrolled -> "Done. The mic opens only for you."
-                    run != Controller.Run.RUNNING -> "Becomes available as soon as step 2 is connected."
+                    !bridgeOk -> "Becomes available as soon as step 2 is connected."
+                    run != Controller.Run.RUNNING -> if (status.isNotBlank()) status else "Opening the microphone…"
                     counting -> "Keep talking normally... $secondsLeft"
                     else -> "Read any sentence normally in a quiet spot."
                 },
                 action = if (!enrolled && run == Controller.Run.RUNNING && !counting) "Record" to { counting = true } else null)
 
+            if (bridgeOk && !enrolled && run != Controller.Run.RUNNING && status.isNotBlank()) {
+                // connected, but the microphone or the virtual mic did not come up: one tap gives the full reason
+                TextButton(onClick = { clipboard.setText(AnnotatedString(AdbLauncher.diagnostics(ctx))) }) { Text("Copy report") }
+            }
             if (counting) {
                 Spacer(Modifier.height(8.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) { CircularProgressIndicator() }

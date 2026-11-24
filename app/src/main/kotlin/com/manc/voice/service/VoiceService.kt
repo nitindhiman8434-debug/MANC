@@ -198,10 +198,11 @@ class VoiceService : Service() {
             }
             if (mode == Controller.Mode.CELLULAR) Controller.setCellularReport(report)
             if (!ok) {
+                val why = j.optString("reason").let { if (it.isNotEmpty()) " ($it)" else "" }
                 Controller.setStatus(when (mode) {
                     Controller.Mode.CELLULAR -> "Cellular path not available on this device (see Cellular Lab report)."
-                    Controller.Mode.AUTO -> "Could not install the virtual microphone. See Advanced → Connection diagnostics."
-                    else -> "Could not install the virtual microphone for the selected app."
+                    Controller.Mode.AUTO -> "Could not install the virtual microphone$why. See Advanced → Connection diagnostics."
+                    else -> "Could not install the virtual microphone for the selected app$why."
                 })
                 return
             }

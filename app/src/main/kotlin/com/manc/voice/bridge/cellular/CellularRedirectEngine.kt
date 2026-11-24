@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
+import com.manc.voice.bridge.hidden.BridgeLog
 import com.manc.voice.bridge.hidden.ShellContext
 import org.json.JSONObject
 import java.io.FileInputStream
@@ -66,7 +67,7 @@ class CellularRedirectEngine {
                         }
                         t.write(shorts, 0, n, AudioTrack.WRITE_BLOCKING)
                     }
-                } catch (e: Throwable) { Log.w(TAG, "uplink loop: ${e.message}") }
+                } catch (e: Throwable) { BridgeLog.w(TAG, "uplink loop: ${BridgeLog.describe(e)}") }
             }.apply { isDaemon = true; start() }
             json.put("started", true)
             json.put("reason", "Uplink injection track active; remote party now hears the cleaned voice.")
@@ -96,7 +97,7 @@ class CellularRedirectEngine {
             t.play()
             track = t
             true
-        } catch (e: Throwable) { Log.w(TAG, "attach: ${e.message}"); false }
+        } catch (e: Throwable) { BridgeLog.w(TAG, "attach: ${BridgeLog.describe(e)}"); false }
     }
 
     fun write(shorts: ShortArray, n: Int) {

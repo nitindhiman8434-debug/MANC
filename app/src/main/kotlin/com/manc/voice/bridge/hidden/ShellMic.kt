@@ -20,12 +20,12 @@ object ShellMic {
         for (src in sources) for (rate in rates) {
             val rec = tryCreate(src, rate) ?: continue
             if (rec.state == AudioRecord.STATE_INITIALIZED) {
-                Log.i(TAG, "mic ok source=$src rate=$rate")
+                BridgeLog.i(TAG, "mic ok source=$src rate=$rate")
                 return rec
             }
             try { rec.release() } catch (_: Throwable) {}
         }
-        Log.e(TAG, "no microphone configuration worked")
+        BridgeLog.e(TAG, "no microphone configuration worked")
         return null
     }
 
@@ -48,7 +48,7 @@ object ShellMic {
             } catch (_: Throwable) {}
             b.build()
         } catch (e: Throwable) {
-            Log.w(TAG, "mic create failed source=$source rate=$rate: ${e.message}"); null
+            BridgeLog.w(TAG, "mic create failed source=$source rate=$rate: ${BridgeLog.describe(e)}"); null
         }
     }
 }

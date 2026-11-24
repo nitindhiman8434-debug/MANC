@@ -103,7 +103,7 @@ object AudioReflect {
         val mixes = ArrayList<Any>()
         for (p in presets) {
             try { mixes.add(buildMixForPreset(uid, p, format, forCall)) }
-            catch (e: Throwable) { Log.w(TAG, "mix build failed preset=$p: ${e.message}") }
+            catch (e: Throwable) { BridgeLog.w(TAG, "mix build failed preset=$p: ${BridgeLog.describe(e)}") }
         }
         if (mixes.isEmpty()) return null
 
@@ -116,7 +116,7 @@ object AudioReflect {
         val reg = AudioManager::class.java.getDeclaredMethod("registerAudioPolicyStatic", apClass)
         reg.isAccessible = true
         val result = reg.invoke(null, policy) as Int
-        if (result != 0) { Log.e(TAG, "registerAudioPolicy returned $result"); return null }
+        if (result != 0) { BridgeLog.e(TAG, "registerAudioPolicy returned $result"); return null }
 
         val createTrack = apClass.getMethod("createAudioTrackSource", amClass)
         val tracks = ArrayList<AudioTrack>()
@@ -124,12 +124,14 @@ object AudioReflect {
             try {
                 val t = createTrack.invoke(policy, m) as AudioTrack
                 tracks.add(t)
-            } catch (e: Throwable) { Log.w(TAG, "createAudioTrackSource: ${e.message}") }
+            } catch (e: Throwable) { BridgeLog.w(TAG, "createAudioTrackSource: ${BridgeLog.describe(e)}") }
         }
         if (tracks.isEmpty()) {
+            BridgeLog.e(TAG, "no injector track could be created")
             unregister(policy)
             return null
         }
+        BridgeLog.i(TAG, "virtual mic registered: ${tracks.size} of ${mixes.size} mixes, uid=${uid ?: "all"}")
         return InjectionHandle(policy, tracks)
     }
 
