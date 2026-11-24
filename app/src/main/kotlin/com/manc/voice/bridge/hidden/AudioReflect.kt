@@ -124,8 +124,9 @@ object AudioReflect {
         val tracks = ArrayList<AudioTrack>()
         for (m in mixes) {
             try {
-                val t = createTrack.invoke(policy, m) as AudioTrack
-                tracks.add(t)
+                val t = createTrack.invoke(policy, m) as AudioTrack?
+                if (t != null) tracks.add(t)
+                else BridgeLog.w(TAG, "createAudioTrackSource returned null (policy not ready: registration or MODIFY_AUDIO_ROUTING check failed)")
             } catch (e: Throwable) { BridgeLog.w(TAG, "createAudioTrackSource: ${BridgeLog.describe(e)}") }
         }
         if (tracks.isEmpty()) {

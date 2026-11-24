@@ -82,6 +82,12 @@ object BridgeServer {
         } catch (e: Throwable) {
             log("bootstrap FAILED: ${describe(e)}")
         }
+        try {
+            service.allowedUid = ShellContext.context.packageManager.getPackageUid(pkg, 0)
+            log("serving uid ${service.allowedUid}")
+        } catch (e: Throwable) {
+            log("could not resolve the app's uid (caller check skipped): ${describe(e)}")
+        }
         startDelivery()
         Looper.loop()
     }

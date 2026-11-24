@@ -78,6 +78,15 @@ class LaunchLogicTest {
         LaunchLogic.buildLaunchScript("com.x; rm -rf /", 1, 0)
     }
 
+    @Test fun onlyTheOwningAppMayUseTheBridge() {
+        assertTrue(LaunchLogic.isAllowedBridgeCaller(callerUid = 10234, appUid = 10234, selfUid = 2000))
+        assertTrue(LaunchLogic.isAllowedBridgeCaller(callerUid = 2000, appUid = 10234, selfUid = 2000))
+        assertTrue(LaunchLogic.isAllowedBridgeCaller(callerUid = 0, appUid = 10234, selfUid = 2000))
+        assertFalse(LaunchLogic.isAllowedBridgeCaller(callerUid = 10999, appUid = 10234, selfUid = 2000))
+        // unresolved app UID: no check (the Binder is only handed to that app anyway)
+        assertTrue(LaunchLogic.isAllowedBridgeCaller(callerUid = 10999, appUid = -1, selfUid = 2000))
+    }
+
     @Test fun onlyShellOrRootMayDeliverTheBridge() {
         assertTrue(LaunchLogic.isTrustedCaller(2000))
         assertTrue(LaunchLogic.isTrustedCaller(0))

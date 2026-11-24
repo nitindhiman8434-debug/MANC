@@ -37,6 +37,30 @@ class VoiceBridgeService : IVoiceBridge.Stub {
      */
     constructor(deferBootstrap: Boolean) { if (!deferBootstrap) prepare() }
 
+    /** UID of the app this bridge serves; set by the helper once it has resolved it. */
+    @Volatile var allowedUid: Int = -1
+
+    /**
+     * Every call arrives on a Binder thread carrying the *app's* identity, and the
+     * framework's own client-side checks use it: AudioPolicy.createAudioTrackSource
+     * asks checkCallingOrSelfPermission(MODIFY_AUDIO_ROUTING), finds the app without
+     * it and returns null (first seen on a Galaxy Z Fold 7, Android 17). The bridge
+     * exists to act as the shell user, so check the caller once, then drop its
+     * identity for the duration of the call.
+     */
+    public override fun onTransact(code: Int, data: android.os.Parcel, reply: android.os.Parcel?, flags: Int): Boolean {
+        val caller = android.os.Binder.getCallingUid()
+        if (!com.manc.voice.adb.LaunchLogic.isAllowedBridgeCaller(caller, allowedUid, Process.myUid())) {
+            throw SecurityException("MANC bridge: uid $caller is not allowed")
+        }
+        val token = android.os.Binder.clearCallingIdentity()
+        try {
+            return super.onTransact(code, data, reply, flags)
+        } finally {
+            android.os.Binder.restoreCallingIdentity(token)
+        }
+    }
+
     /** Set when the shell-context bootstrap failed; reported by describeEnvironment(). */
     @Volatile private var initError: String? = null
 

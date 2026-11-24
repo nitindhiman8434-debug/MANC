@@ -57,6 +57,14 @@ object LaunchLogic {
         return appId == 2000 || appId == 0
     }
 
+    /**
+     * Who may use the bridge Binder: the app it was started for, the bridge's own
+     * UID (shell) and root. [appUid] <= 0 means it could not be resolved, in which
+     * case the check is skipped (the Binder is only ever handed to that app).
+     */
+    fun isAllowedBridgeCaller(callerUid: Int, appUid: Int, selfUid: Int): Boolean =
+        appUid <= 0 || callerUid == appUid || callerUid == selfUid || isTrustedCaller(callerUid)
+
     const val DONE_MARKER = "MANC_DONE"
     const val SERVER_CLASS = "com.manc.voice.server.BridgeServer"
     const val NICE_NAME = "manc_voice_bridge"
