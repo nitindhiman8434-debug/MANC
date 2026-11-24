@@ -453,6 +453,7 @@ object AdbLauncher {
         if (connectLog.isNotBlank()) append(connectLog).append('\n')
         if (lastLog.isNotBlank()) append("--- last launch ---\n").append(lastLog.trim()).append('\n')
         if (BridgeHub.serverLog.isNotBlank()) append("--- helper ---\n").append(BridgeHub.serverLog.trim()).append('\n')
+        com.manc.voice.Controller.lastSession.takeIf { it.isNotEmpty() }?.let { append(it).append('\n') }
         val status = com.manc.voice.Controller.status.value
         if (status.isNotBlank()) append("Status: ").append(status).append('\n')
         // what the bridge itself saw (microphone, virtual mic); fetched live over the Binder

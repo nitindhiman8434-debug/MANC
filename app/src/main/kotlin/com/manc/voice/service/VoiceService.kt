@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.manc.voice.Controller
@@ -226,6 +227,7 @@ class VoiceService : Service() {
             val inFloat = FloatArray(chunk)
             val outFloat = FloatArray(chunk)
             var emptyReads = 0
+            stats = SessionStats(inCall, SystemClock.elapsedRealtime())
 
             while (pipelineRunning) {
                 val mic = bridge.readMic()
@@ -278,6 +280,7 @@ class VoiceService : Service() {
                         bridge.writeClean(outBytes)
                     }
                     Controller.publishMeters(engine.meters)
+                    stats?.add(engine.meters)
                 }
             }
         } catch (e: Throwable) {
@@ -289,6 +292,8 @@ class VoiceService : Service() {
             try { bridge.stopInjection() } catch (_: Throwable) {}
             try { bridge.stopCellularRedirect() } catch (_: Throwable) {}
             try { bridge.stopMicCapture() } catch (_: Throwable) {}
+            stats?.let { if (it.blocks > 0) Controller.lastSession = it.summary(SystemClock.elapsedRealtime()) }
+            stats = null
             pipelineRunning = false
             handler.post {
                 Controller.publishMeters(Meters())
@@ -297,6 +302,42 @@ class VoiceService : Service() {
             }
             // if the call is still on (for example the helper was restarted mid-call), try again shortly
             handler.postDelayed({ if (!stopping && !pipelineRunning) evaluate() }, 3000)
+        }
+    }
+
+    @Volatile private var stats: SessionStats? = null
+
+    /**
+     * What one pipeline run looked like from the inside: was the microphone
+     * delivering sound, was there speech, how often was the gate open, what went
+     * out. Without it a "the other side heard nothing" report cannot be told apart.
+     */
+    private class SessionStats(val call: Boolean, val startedAt: Long) {
+        var blocks = 0
+        private var silentMic = 0
+        private var speech = 0
+        private var gateOpen = 0
+        private var inSum = 0.0; private var inMax = 0f
+        private var outMax = 0f
+        private var simSum = 0.0
+
+        fun add(m: Meters) {
+            blocks++
+            if (m.inputRms < 1e-4f) silentMic++
+            if (m.speechProb > 0.5f) speech++
+            if (m.gate > 0.5f) gateOpen++
+            inSum += m.inputRms; if (m.inputRms > inMax) inMax = m.inputRms
+            if (m.outputRms > outMax) outMax = m.outputRms
+            simSum += m.ownerSimilarity
+        }
+
+        fun summary(now: Long): String {
+            val n = blocks.coerceAtLeast(1)
+            fun pct(x: Int) = "${x * 100 / n}%"
+            return "Last run (${if (call) "call" else "test"}, ${(now - startedAt) / 1000} s): " +
+                "mic silent ${pct(silentMic)}, mic level avg ${"%.3f".format(inSum / n)} max ${"%.3f".format(inMax)}, " +
+                "speech ${pct(speech)}, gate open ${pct(gateOpen)}, voice match avg ${(simSum * 100 / n).toInt()}%, " +
+                "sent level max ${"%.3f".format(outMax)}"
         }
     }
 

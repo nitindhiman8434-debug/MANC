@@ -68,6 +68,9 @@ object Controller {
     @Volatile var enrollFinishRequested = false
     @Volatile var enrolledProfile: String? = null
     @Volatile var enrolledNeural: String? = null
+    /** One-line summary of the last pipeline run (a call or a test), for the report. */
+    @Volatile var lastSession: String = ""
+
     /** Outcome of the last voice recording, for the teach screens. */
     enum class EnrollResult { NONE, SAVED, TOO_LITTLE_SPEECH }
     private val _enrollResult = MutableStateFlow(EnrollResult.NONE)
