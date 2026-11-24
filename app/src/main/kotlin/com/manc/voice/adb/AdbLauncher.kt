@@ -36,12 +36,16 @@ object AdbLauncher {
     private const val PREFS = "manc_adb"
     private const val KEY_PAIRED = "paired"
     private const val ADB_WIFI_ENABLED = "adb_wifi_enabled"
+    private const val KEY_LAST_PORT = "last_tls_port"
 
     private val exec = Executors.newSingleThreadExecutor { r -> Thread(r, "manc-adb").apply { isDaemon = true } }
     @Volatile private var busy = false
     @Volatile private var failures = 0
     @Volatile private var lastAttempt = 0L
     @Volatile private var wdReadable = true
+    /** Android refused our attempt to switch wireless debugging on: the user has to allow this Wi-Fi network once. */
+    @Volatile private var needsNetworkApproval = false
+    @Volatile private var lastUpgradeAttempt = 0L
 
     private val _step = MutableStateFlow(Step.NEED_DEV_OPTIONS)
     val step: StateFlow<Step> = _step
@@ -83,7 +87,9 @@ object AdbLauncher {
 
     /** Recompute where we stand; cheap, safe to call often. */
     fun evaluate(ctx: Context): Step {
-        val wd = wirelessDebuggingOn(ctx) || _pairingPort.value > 0 || !wdReadable
+        val wdSetting = wirelessDebuggingOn(ctx)
+        if (wdSetting) needsNetworkApproval = false
+        val wd = wdSetting || _pairingPort.value > 0 || !wdReadable
         val s = LaunchLogic.decide(
             LaunchLogic.Inputs(
                 connected = BridgeHub.bridge != null,
@@ -92,7 +98,7 @@ object AdbLauncher {
                 devOptions = devOptionsOn(ctx),
                 wifi = wifiConnected(ctx),
                 wirelessDebugging = wd,
-                canToggle = canToggle(ctx)
+                canToggle = canToggle(ctx) && !needsNetworkApproval
             )
         )
         _step.value = s
@@ -100,11 +106,15 @@ object AdbLauncher {
         return s
     }
 
+    /** True when the only thing missing is the user's OK for wireless debugging on the current Wi-Fi network. */
+    val waitingForNetworkApproval: Boolean get() = needsNetworkApproval
+
     /** One short line for the notification / Home screen while not connected. */
     fun hint(step: Step = _step.value): String = when (step) {
         Step.CONNECTED -> ""
         Step.WORKING, Step.READY_TO_LAUNCH -> "Reconnecting…"
         Step.NEED_WIFI -> "Connect to Wi-Fi once to resume protection"
+        Step.NEED_WIRELESS_DEBUGGING -> if (needsNetworkApproval) "Open MANC: allow wireless debugging on this Wi-Fi once" else "Open MANC to finish setup"
         else -> "Open MANC to finish setup"
     }
 
@@ -123,6 +133,32 @@ object AdbLauncher {
         exec.execute {
             try { launch(app, firstRun = false) } catch (e: Throwable) { fail("Unexpected error: ${e.message ?: e}") }
             finally { busy = false; evaluate(app) }
+        }
+    }
+
+    /**
+     * The helper keeps serving across app updates. When it is older than the app,
+     * replace it in the background as soon as that is possible, without bothering the
+     * user and without touching a call in progress ([idle] must be true).
+     */
+    fun upgradeHelperIfStale(ctx: Context, idle: Boolean) {
+        val app = ctx.applicationContext
+        if (!idle || busy || !BridgeHub.builtInAlive || BridgeHub.serverVersion == BuildConfig.VERSION_CODE) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !isPaired(app) || !wifiConnected(app)) return
+        if (!wirelessDebuggingOn(app) && (!canToggle(app) || needsNetworkApproval)) return
+        val now = SystemClock.elapsedRealtime()
+        if (lastUpgradeAttempt != 0L && now - lastUpgradeAttempt < 10 * 60_000L) return
+        lastUpgradeAttempt = now
+        busy = true
+        exec.execute {
+            val errorBefore = _error.value
+            try { launch(app, firstRun = false) } catch (e: Throwable) { Log.w(TAG, "upgrade: ${e.message}") }
+            finally {
+                // the old helper is still serving: a failed upgrade is not the user's problem
+                if (BridgeHub.bridge != null) _error.value = errorBefore
+                busy = false
+                evaluate(app)
+            }
         }
     }
 
@@ -191,7 +227,15 @@ object AdbLauncher {
         if (!canToggle(ctx)) return false
         val cr = ctx.contentResolver
         var usbJustEnabled = false
-        try { if (!wirelessDebuggingOn(ctx)) Settings.Global.putInt(cr, ADB_WIFI_ENABLED, 1) } catch (e: Throwable) { Log.w(TAG, "enable wd: ${e.message}") }
+        try {
+            if (!wirelessDebuggingOn(ctx)) {
+                Settings.Global.putInt(cr, ADB_WIFI_ENABLED, 1)
+                // On a Wi-Fi network that is not yet allowed, Android shows a confirmation
+                // and puts the switch straight back to off. Give it a moment, then look.
+                sleep(1500)
+                needsNetworkApproval = !wirelessDebuggingOn(ctx)
+            } else needsNetworkApproval = false
+        } catch (e: Throwable) { Log.w(TAG, "enable wd: ${e.message}") }
         try {
             if (!usbDebuggingOn(ctx)) { Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1); usbJustEnabled = true }
         } catch (e: Throwable) { Log.w(TAG, "enable usb debugging: ${e.message}") }
@@ -239,34 +283,85 @@ object AdbLauncher {
         return false
     }
 
+    /** adbd publishes its TLS port in a system property; apps may or may not be allowed to read it. */
+    private fun publishedTlsPort(): Int = try {
+        val sp = Class.forName("android.os.SystemProperties")
+        sp.getMethod("getInt", String::class.java, Int::class.javaPrimitiveType).invoke(null, "service.adb.tls.port", -1) as Int
+    } catch (_: Throwable) { -1 }
+
+    /** Ask mDNS for the daemon's connect port; -1 when nothing answers in time. */
+    private fun discoverTlsPort(ctx: Context, timeoutMs: Long): Int {
+        val found = AtomicInteger(-1)
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val mdns = try {
+            AdbMdns(ctx, AdbMdns.SERVICE_TYPE_TLS_CONNECT) { _, port -> if (port > 0) { found.set(port); latch.countDown() } }
+        } catch (_: Throwable) { return -1 }
+        try {
+            mdns.start()
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (_: Throwable) {
+        } finally { try { mdns.stop() } catch (_: Throwable) { } }
+        return found.get()
+    }
+
+    /** What the last connect attempt tried, for the report. */
+    @Volatile private var connectLog: String = ""
+
+    /**
+     * Find and connect to the phone's own adbd. Candidates, most trustworthy first:
+     * the port adbd publishes, the port that worked last time, the port announced
+     * over mDNS, then every open loopback port in the ephemeral range. Each try is
+     * short, and everything tried is written to the report.
+     */
     private fun connect(ctx: Context, mgr: AdbManager): Boolean {
+        val log = StringBuilder("connect:")
         try { mgr.disconnect() } catch (_: Throwable) { }
-        mgr.setTimeout(8, TimeUnit.SECONDS)
-        // 1) the daemon announces its port over mDNS
-        for (attempt in 1..2) {
-            try {
-                if (mgr.connectTls(ctx, 7000)) return true
-            } catch (e: AdbPairingRequiredException) {
-                return unpaired(ctx)
-            } catch (e: Throwable) {
-                Log.w(TAG, "mdns connect: ${e.message}")
-            }
+        if (!wirelessDebuggingOn(ctx)) {
+            connectLog = log.append(" wireless debugging is off").toString()
+            fail("Wireless debugging is off.")
+            return false
         }
-        // 2) fall back to finding the port ourselves on the loopback interface
         val host = AdbManager.hostAddress(ctx)
-        for (p in scanOpenLoopbackPorts().take(6)) {
+        val tried = LinkedHashSet<Int>()
+        var pairingLost = false
+
+        fun attempt(port: Int, source: String, timeoutSec: Long): Boolean {
+            if (port <= 0 || !tried.add(port) || pairingLost) return false
             try { mgr.disconnect() } catch (_: Throwable) { }
-            try {
-                if (mgr.connect(host, p)) return true
+            mgr.setTimeout(timeoutSec, TimeUnit.SECONDS)
+            return try {
+                val ok = mgr.connect(host, port)
+                log.append(" ").append(source).append('=').append(port).append(if (ok) ":ok" else ":no")
+                if (ok) prefs(ctx).edit().putInt(KEY_LAST_PORT, port).apply()
+                ok
             } catch (e: AdbPairingRequiredException) {
-                return unpaired(ctx)
+                log.append(" ").append(source).append('=').append(port).append(":pairing-required")
+                pairingLost = true
+                false
             } catch (e: Throwable) {
-                Log.w(TAG, "connect $p: ${e.message}")
+                log.append(" ").append(source).append('=').append(port).append(":").append(e.javaClass.simpleName)
+                false
             }
         }
+
+        var ok = attempt(publishedTlsPort(), "prop", 5)
+        if (!ok) ok = attempt(prefs(ctx).getInt(KEY_LAST_PORT, -1), "last", 4)
+        if (!ok && !pairingLost) {
+            val p = discoverTlsPort(ctx, 6000)
+            if (p <= 0) log.append(" mdns=none")
+            ok = attempt(p, "mdns", 6)
+        }
+        if (!ok && !pairingLost) {
+            val open = scanOpenLoopbackPorts()
+            log.append(" open=").append(open.size)
+            for (p in open.take(30)) { if (attempt(p, "scan", 2)) { ok = true; break } }
+        }
+        connectLog = log.toString()
+        if (ok) return true
+        if (pairingLost) return unpaired(ctx)
         fail(
-            if (wirelessDebuggingOn(ctx)) "Could not reach wireless debugging. If Android asks to allow it on this Wi-Fi network, tap Allow."
-            else "Wireless debugging is off."
+            if (!wirelessDebuggingOn(ctx)) "Android switched wireless debugging off again. It wants your OK for this Wi-Fi network."
+            else "Could not reach wireless debugging. Open Developer options, switch Wireless debugging off and on, and allow it for this Wi-Fi network."
         )
         return false
     }
@@ -355,6 +450,7 @@ object AdbLauncher {
         append("Android ").append(Build.VERSION.RELEASE).append(" (SDK ").append(Build.VERSION.SDK_INT).append("), ")
             .append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n')
         if (_error.value.isNotEmpty()) append("Last error: ").append(_error.value).append('\n')
+        if (connectLog.isNotBlank()) append(connectLog).append('\n')
         if (lastLog.isNotBlank()) append("--- last launch ---\n").append(lastLog.trim()).append('\n')
         if (BridgeHub.serverLog.isNotBlank()) append("--- helper ---\n").append(BridgeHub.serverLog.trim()).append('\n')
         val status = com.manc.voice.Controller.status.value

@@ -71,11 +71,20 @@ fun HomeScreen(
 
         if (!bridgeOk || !enrolled) {
             // something is missing: one clear call to action, nothing else to decide
+            val paired = remember(bridgeOk, bridgeHint) { AdbLauncher.isPaired(ctx) }
             SectionCard {
-                Text(if (!bridgeOk) "Finish the one-time setup to start." else "Teach it your voice once so it opens only for you.",
+                Text(
+                    when {
+                        bridgeOk -> "Teach it your voice once so it opens only for you."
+                        // set up before, the helper just is not running right now (app update, restart)
+                        paired -> "Reconnecting to the helper. This happens by itself after an update or a restart; if it does not finish within a minute, open the details."
+                        else -> "Finish the one-time setup to start."
+                    },
                     style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.height(10.dp))
-                Button(onClick = onSetup, Modifier.fillMaxWidth().height(52.dp)) { Text("Finish setup") }
+                Button(onClick = onSetup, Modifier.fillMaxWidth().height(52.dp)) {
+                    Text(if (!bridgeOk && paired) "Show details" else "Finish setup")
+                }
             }
         }
 

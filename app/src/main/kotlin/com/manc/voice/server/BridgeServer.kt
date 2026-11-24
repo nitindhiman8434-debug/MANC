@@ -32,6 +32,12 @@ import java.io.FileOutputStream
 object BridgeServer {
     private val logBuf = StringBuilder()
     private val wake = Object()
+    private var staleLogged = false
+
+    /** Unknown counts as installed: never exit on a failed lookup. */
+    private fun appInstalled(pkg: String): Boolean = try {
+        ShellContext.context.packageManager.getPackageUid(pkg, 0); true
+    } catch (e: android.content.pm.PackageManager.NameNotFoundException) { false } catch (_: Throwable) { true }
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -101,7 +107,13 @@ object BridgeServer {
         var appToken: IBinder? = null
         var misses = 0
         while (true) {
-            if (apkPath.isNotEmpty() && !File(apkPath).exists()) { log("apk gone; exiting"); System.exit(0) }
+            // An app update replaces the APK this process was loaded from. Its code stays
+            // mapped, so keep serving (the updated app starts a newer helper when it can,
+            // which asks this one to leave). Only an uninstall ends the helper.
+            if (apkPath.isNotEmpty() && !File(apkPath).exists()) {
+                if (!appInstalled(pkg)) { log("app uninstalled; exiting"); System.exit(0) }
+                if (!staleLogged) { staleLogged = true; log("app was updated; still serving until a newer helper takes over") }
+            }
             val alive = appToken?.isBinderAlive == true
             if (!alive) {
                 appToken = null

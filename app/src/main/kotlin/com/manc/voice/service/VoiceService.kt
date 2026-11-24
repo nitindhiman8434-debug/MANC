@@ -51,7 +51,11 @@ class VoiceService : Service() {
             BridgeHub.refresh()
             val ok = BridgeHub.bridge != null
             // no bridge: restart the built-in helper by ourselves when nothing needs the user
-            if (ok) AdbLauncher.evaluate(applicationContext) else AdbLauncher.ensureRunning(applicationContext)
+            if (ok) {
+                AdbLauncher.evaluate(applicationContext)
+                // an older helper keeps working after an app update; swap it when nothing is running
+                AdbLauncher.upgradeHelperIfStale(applicationContext, idle = !pipelineRunning && !inCall && !Controller.forceActive)
+            } else AdbLauncher.ensureRunning(applicationContext)
             Controller.setBridgeHint(if (ok) "" else AdbLauncher.hint())
             if (!pipelineRunning) updateNotification()
             handler.postDelayed(this, 5000)

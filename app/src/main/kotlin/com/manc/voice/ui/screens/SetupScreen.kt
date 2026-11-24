@@ -115,8 +115,14 @@ fun SetupScreen(onBack: () -> Unit, notifGranted: Boolean, onRequestNotif: () ->
                     }
 
                     step == Step.NEED_WIRELESS_DEBUGGING -> {
-                        Hint(if (AdbLauncher.isPaired(ctx)) "Turn “Wireless debugging” on once so protection can restart."
-                             else "Open Developer options and turn on “Wireless debugging”. Then tap its name and choose “Pair device with pairing code”.")
+                        Hint(when {
+                            AdbLauncher.isPaired(ctx) && AdbLauncher.waitingForNetworkApproval ->
+                                "Android wants your OK for wireless debugging on this Wi-Fi network. Open Developer options, switch “Wireless debugging” on, tick “Always allow on this network” and tap Allow. MANC then continues by itself; no code is needed."
+                            AdbLauncher.isPaired(ctx) ->
+                                "Switch “Wireless debugging” on once so protection can restart. If Android asks about this Wi-Fi network, tick “Always allow on this network”. No code is needed."
+                            else ->
+                                "Open Developer options and turn on “Wireless debugging” (tick “Always allow on this network” when asked). Then tap its name and choose “Pair device with pairing code”."
+                        })
                         FullButton("Open Developer options") { openDeveloperOptions(ctx) }
                     }
 
@@ -143,7 +149,8 @@ fun SetupScreen(onBack: () -> Unit, notifGranted: Boolean, onRequestNotif: () ->
 
                     step == Step.READY_TO_LAUNCH && error.isNotEmpty() -> {
                         // paired, but the last start attempt failed: no code is needed again
-                        Hint("Pairing is done; the pairing code is not needed again. Starting the helper has not worked yet.")
+                        Hint("Pairing is done; the pairing code is not needed again. MANC could not reach wireless debugging yet. In Developer options switch “Wireless debugging” off and on, and tick “Always allow on this network” if Android asks. Then try again.")
+                        FullButton("Open Developer options") { openDeveloperOptions(ctx) }
                         FullButton("Try again") { AdbLauncher.ensureRunning(ctx, force = true) }
                     }
 
