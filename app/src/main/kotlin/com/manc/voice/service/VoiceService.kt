@@ -292,7 +292,11 @@ class VoiceService : Service() {
             try { bridge.stopInjection() } catch (_: Throwable) {}
             try { bridge.stopCellularRedirect() } catch (_: Throwable) {}
             try { bridge.stopMicCapture() } catch (_: Throwable) {}
-            stats?.let { if (it.blocks > 0) Controller.lastSession = it.summary(SystemClock.elapsedRealtime()) }
+            // keep the last five runs: one test session usually means several calls
+            stats?.let {
+                if (it.blocks > 0) Controller.lastSession =
+                    (Controller.lastSession.lines().filter { l -> l.isNotBlank() } + it.summary(SystemClock.elapsedRealtime())).takeLast(5).joinToString("\n")
+            }
             stats = null
             pipelineRunning = false
             handler.post {

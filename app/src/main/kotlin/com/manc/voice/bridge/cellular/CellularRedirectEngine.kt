@@ -83,6 +83,11 @@ class CellularRedirectEngine {
     fun attach(sampleRate: Int): Boolean {
         return try {
             val am = ShellContext.context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            // Only for a real phone-network call. The uplink-injection track registers a
+            // second audio policy that matches every VOICE_COMMUNICATION recorder; in an
+            // internet call that policy swallowed the bridge's own microphone capture, so
+            // the bridge heard its own (silent) output and the far end heard nothing.
+            if (am.mode != AudioManager.MODE_IN_CALL) return false
             val interceptable = try {
                 AudioManager::class.java.getMethod("isPstnCallAudioInterceptable").invoke(am) as Boolean
             } catch (e: Throwable) { false }

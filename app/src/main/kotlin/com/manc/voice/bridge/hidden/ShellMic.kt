@@ -13,10 +13,16 @@ import android.util.Log
 object ShellMic {
     private const val TAG = "ShellMic"
 
-    fun create(preferredRate: Int): AudioRecord? {
+    /**
+     * [avoidVoiceCommunication]: use a different source than VOICE_COMMUNICATION, for
+     * the cases where a policy mix is capturing that source (see VoiceBridgeService).
+     */
+    fun create(preferredRate: Int, avoidVoiceCommunication: Boolean = false): AudioRecord? {
         ShellContext.prepare()
         val rates = intArrayOf(preferredRate, 48000, 44100, 32000, 8000).distinct()
-        val sources = intArrayOf(MediaRecorder.AudioSource.VOICE_COMMUNICATION, MediaRecorder.AudioSource.MIC)
+        val sources = if (avoidVoiceCommunication)
+            intArrayOf(MediaRecorder.AudioSource.VOICE_PERFORMANCE, MediaRecorder.AudioSource.UNPROCESSED, MediaRecorder.AudioSource.CAMCORDER)
+        else intArrayOf(MediaRecorder.AudioSource.VOICE_COMMUNICATION, MediaRecorder.AudioSource.MIC)
         for (src in sources) for (rate in rates) {
             val rec = tryCreate(src, rate) ?: continue
             if (rec.state == AudioRecord.STATE_INITIALIZED) {

@@ -169,10 +169,12 @@ class VoiceBridgeService : IVoiceBridge.Stub {
         try { pr?.release() } catch (_: Throwable) {}
     }
 
-    override fun openMic(sampleRate: Int): Boolean {
+    override fun openMic(sampleRate: Int): Boolean = openMicInternal(sampleRate, avoidVoiceCommunication = false)
+
+    private fun openMicInternal(sampleRate: Int, avoidVoiceCommunication: Boolean): Boolean { synchronized(micLock) {
         prepare()
         stopMicCapture()
-        val rec = try { ShellMic.create(sampleRate) } catch (e: Throwable) { BridgeLog.e(TAG, "openMic failed", e); null } ?: return false
+        val rec = try { ShellMic.create(sampleRate, avoidVoiceCommunication) } catch (e: Throwable) { BridgeLog.e(TAG, "openMic failed", e); null } ?: return false
         if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); return false }
         val devRate = rec.sampleRate
         BridgeLog.i(TAG, "mic open at $devRate Hz (wanted $sampleRate)")
@@ -190,9 +192,32 @@ class VoiceBridgeService : IVoiceBridge.Stub {
             try { rec.release() } catch (_: Throwable) {}
             false
         }
+    } }
+
+    private val micLock = Any()
+
+    /**
+     * True when the system has routed our own microphone capture to a policy mix
+     * (a remote-submix device) instead of a real microphone: we would then be
+     * listening to an injected stream, not to the user.
+     */
+    private fun ownCaptureIsOnAMix(): Boolean = try {
+        val am = ShellContext.context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        am.activeRecordingConfigurations.any { c ->
+            val uid = try { c.javaClass.getMethod("getClientUid").invoke(c) as Int } catch (_: Throwable) { -1 }
+            uid == Process.myUid() && c.audioDevice?.type == android.media.AudioDeviceInfo.TYPE_REMOTE_SUBMIX
+        }
+    } catch (_: Throwable) { false }
+
+    /** Reopen the microphone with a source no policy mix is matching. */
+    private fun escapeMix(moment: String) {
+        if (!ownCaptureIsOnAMix()) return
+        BridgeLog.e(TAG, "our own microphone capture was routed to a policy mix ($moment); reopening with another source")
+        val ok = openMicInternal(pullRate, avoidVoiceCommunication = true)
+        BridgeLog.i(TAG, "microphone reopened: $ok; still on a mix: ${ownCaptureIsOnAMix()}")
     }
 
-    override fun readMic(): ByteArray {
+    override fun readMic(): ByteArray { synchronized(micLock) {
         val rec = pullRecord ?: return EMPTY
         return try {
             val n = rec.read(pullShorts, 0, pullShorts.size)
@@ -218,7 +243,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
         } catch (e: Throwable) {
             BridgeLog.w(TAG, "readMic: ${BridgeLog.describe(e)}"); EMPTY
         }
-    }
+    } }
 
     override fun openSink(mode: Int, arg: Int, sampleRate: Int): String {
         prepare()
@@ -238,10 +263,17 @@ class VoiceBridgeService : IVoiceBridge.Stub {
             // and once more when the call app's own recorder has had time to start
             val mySink = sinkOut
             Thread({
-                for ((waitMs, label) in listOf(4000L to "after 4 s", 16000L to "after 20 s")) {
-                    try { Thread.sleep(waitMs) } catch (_: InterruptedException) { }
+                // watch the routing for the whole run: the call app's recorder can start late,
+                // and a route change (earbuds on/off) re-evaluates every recorder
+                var elapsed = 0L
+                while (true) {
+                    try { Thread.sleep(1000) } catch (_: InterruptedException) { }
+                    elapsed += 1000
                     if (sinkOut !== mySink) return@Thread // that run is over
-                    logRecorders(label); injection?.let { BridgeLog.i(TAG, it.stats()) }
+                    escapeMix("${elapsed / 1000} s")
+                    if (elapsed == 4000L || elapsed == 20000L) {
+                        logRecorders("after ${elapsed / 1000} s"); injection?.let { BridgeLog.i(TAG, it.stats()) }
+                    }
                 }
             }, "manc-recorders").apply { isDaemon = true; start() }
             report
