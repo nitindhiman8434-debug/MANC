@@ -9,6 +9,8 @@ coroutines = "1.9.0"
 shizuku = "13.1.5"
 onnxruntime = "1.20.0"
 datastore = "1.1.1"
+libadb = "3.1.1"
+sunSecurity = "1.1"
 junit = "4.13.2"
 
 [libraries]
@@ -29,6 +31,8 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuku" }
 shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }
 onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
+libadb-android = { group = "com.github.MuntashirAkon", name = "libadb-android", version.ref = "libadb" }
+sun-security-android = { group = "com.github.MuntashirAkon", name = "sun-security-android", version.ref = "sunSecurity" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]

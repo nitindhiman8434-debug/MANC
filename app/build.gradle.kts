@@ -98,6 +98,10 @@ dependencies {
 
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
+    // Embedded ADB client: pair + connect to the device's own wireless-debugging
+    // daemon so the app is self-contained (no separate Shizuku app needed).
+    implementation(libs.libadb.android)
+    implementation(libs.sun.security.android)
     implementation(libs.onnxruntime.android)
 
     debugImplementation(libs.androidx.ui.tooling)

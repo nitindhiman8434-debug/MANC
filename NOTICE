@@ -9,7 +9,16 @@ Android audio-policy APIs from a shell-privileged process, adapted from:
   Specifically the ActivityThread / FakeContext bootstrap and the
   AudioPolicy/AudioMix registration approach.
 
+The embedded ADB client (self-pairing, so no separate Shizuku app is needed)
+and its X.509 certificate generation follow the libadb-android sample:
+
+  libadb-android — https://github.com/MuntashirAkon/libadb-android
+  Dual licensed GPL-3.0-or-later OR Apache-2.0; used here under Apache-2.0.
+  The shell-UID server is launched via app_process the same way scrcpy does.
+
 This product depends on, but does not include, the following at build time:
   - ONNX Runtime (MIT) — https://github.com/microsoft/onnxruntime
   - Shizuku API (Apache-2.0 / MIT) — https://github.com/RikkaApps/Shizuku-API
+  - libadb-android (GPL-3.0-or-later OR Apache-2.0; used under Apache-2.0)
+      and sun-security-android, spake2-java — https://github.com/MuntashirAkon
   - AndroidX / Jetpack Compose (Apache-2.0)
