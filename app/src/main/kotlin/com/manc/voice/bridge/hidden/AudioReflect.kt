@@ -29,7 +29,6 @@ object AudioReflect {
 
     private val RULE_MATCH_UID = 4
     private val RULE_MATCH_CAPTURE_PRESET = 2
-    private val RULE_EXCLUDE_UID = 0x8000 or 4   // RULE_EXCLUSION_MASK | RULE_MATCH_UID
     private val MIX_ROLE_INJECTOR = amrClass.getField("MIX_ROLE_INJECTOR").getInt(null)
     private val ROUTE_FLAG_LOOP_BACK = amClass.getField("ROUTE_FLAG_LOOP_BACK").getInt(null)
 
@@ -76,8 +75,11 @@ object AudioReflect {
         addMixRule.invoke(ruleBuilder, RULE_MATCH_CAPTURE_PRESET, capturePresetAttributes(preset, forCall))
         // optional UID narrowing; otherwise EXCLUDE our own process so the bridge's
         // microphone capture is never redirected to its own injected stream (feedback loop)
+        // Exclusions go through excludeMixRule(RULE_MATCH_UID, ...): addMixRule only accepts
+        // the plain RULE_MATCH_* codes and rejects 0x8004 with "Illegal rule value".
         if (uid != null) addMixRule.invoke(ruleBuilder, RULE_MATCH_UID, Integer.valueOf(uid))
-        else addMixRule.invoke(ruleBuilder, RULE_EXCLUDE_UID, Integer.valueOf(android.os.Process.myUid()))
+        else amrBuilderClass.getMethod("excludeMixRule", Int::class.javaPrimitiveType, Any::class.java)
+            .invoke(ruleBuilder, RULE_MATCH_UID, Integer.valueOf(android.os.Process.myUid()))
         amrBuilderClass.getMethod("setTargetMixRole", Int::class.javaPrimitiveType).invoke(ruleBuilder, MIX_ROLE_INJECTOR)
         val rule = amrBuilderClass.getMethod("build").invoke(ruleBuilder)
 
