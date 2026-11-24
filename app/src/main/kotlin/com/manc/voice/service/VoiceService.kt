@@ -228,6 +228,8 @@ class VoiceService : Service() {
             val outFloat = FloatArray(chunk)
             var emptyReads = 0
             stats = SessionStats(inCall, SystemClock.elapsedRealtime())
+            // this thread carries the call audio: it must not wait behind ordinary work
+            try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO) } catch (_: Throwable) { }
 
             while (pipelineRunning) {
                 val mic = bridge.readMic()
@@ -268,7 +270,9 @@ class VoiceService : Service() {
                         engine.exportNeuralProfile()?.let { np -> Controller.enrolledNeural = np; Prefs.saveNeuralVoiceprintAsync(applicationContext, np) }
                     }
 
+                    val t0 = System.nanoTime()
                     val produced = engine.process(inFloat, chunk, outFloat)
+                    stats?.addProcessTime((System.nanoTime() - t0) / 1_000_000f)
                     if (produced > 0) {
                         val outBytes = ByteArray(produced * 2)
                         for (i in 0 until produced) {
@@ -324,6 +328,12 @@ class VoiceService : Service() {
         private var inSum = 0.0; private var inMax = 0f
         private var outMax = 0f
         private var simSum = 0.0
+        private var procSum = 0.0; private var procMax = 0f; private var slowBlocks = 0
+
+        /** Time spent processing one 20 ms block; above 20 ms the stream cannot keep up. */
+        fun addProcessTime(ms: Float) {
+            procSum += ms; if (ms > procMax) procMax = ms; if (ms > 20f) slowBlocks++
+        }
 
         fun add(m: Meters) {
             blocks++
@@ -341,7 +351,10 @@ class VoiceService : Service() {
             return "Last run (${if (call) "call" else "test"}, ${(now - startedAt) / 1000} s): " +
                 "mic silent ${pct(silentMic)}, mic level avg ${"%.3f".format(inSum / n)} max ${"%.3f".format(inMax)}, " +
                 "speech ${pct(speech)}, gate open ${pct(gateOpen)}, voice match avg ${(simSum * 100 / n).toInt()}%, " +
-                "sent level max ${"%.3f".format(outMax)}"
+                "sent level max ${"%.3f".format(outMax)}, " +
+                // audio handled vs. time passed: below 100% the stream is falling behind
+                "kept up ${(blocks * 20L * 100 / (now - startedAt).coerceAtLeast(1)).coerceAtMost(999)}%, " +
+                "per block ${"%.1f".format(procSum / n)} ms avg ${"%.0f".format(procMax)} ms max, slow blocks ${pct(slowBlocks)}"
         }
     }
 

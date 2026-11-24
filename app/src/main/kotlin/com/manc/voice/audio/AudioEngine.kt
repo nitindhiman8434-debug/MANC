@@ -30,16 +30,32 @@ class AudioEngine(
     private val embWindow = FloatArray(sampleRate)
     private var embPos = 0
     private var samplesSinceEmbed = 0
-    private var onnxSimPrior: Double? = null
+    @Volatile private var onnxSimPrior: Double? = null
+
+    // The speaker model is far heavier than one 20 ms audio block allows. Run on the
+    // audio thread (as it first was) it stalled the stream five times a second: on a
+    // real call only about 80 % of the audio got through and the far end heard a
+    // stuttering voice. It now runs on its own low-priority thread; the audio thread
+    // only hands over the latest second of audio and reads the latest score.
+    private val embedExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "manc-speaker").apply { isDaemon = true; priority = Thread.MIN_PRIORITY + 1 }
+    }
+    private val embedBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Let a speaker-model job that is still running finish (enrollment must not lose it). */
+    private fun drainEmbedder() {
+        try { embedExecutor.submit { }.get(3, java.util.concurrent.TimeUnit.SECONDS) } catch (_: Throwable) { }
+    }
 
     @Volatile var meters = Meters(); private set
     @Volatile var nearFieldDb: Float = 6f
 
     private var enrolling = false
 
-    fun beginEnroll() { enrolling = true; chain.beginEnroll(); onnxEmbedder?.beginEnroll(); onnxSimPrior = null }
+    fun beginEnroll() { drainEmbedder(); enrolling = true; chain.beginEnroll(); onnxEmbedder?.beginEnroll(); onnxSimPrior = null }
     fun finishEnroll(): Boolean {
         enrolling = false
+        drainEmbedder()
         // The model-free profile decides: it knows whether enough voiced speech was
         // heard. The neural embedder would accept 5 s of anything, so it only follows.
         val a = chain.finishEnroll()
@@ -76,18 +92,28 @@ class AudioEngine(
         } else input
         chain.spectralDenoise = config.denoiseEnabled && !useNeural
 
-        // 2) neural speaker similarity on the (neural-)denoised audio every ~200 ms,
+        // 2) neural speaker similarity on the (neural-)denoised audio, off this thread,
         //    the same signal used at enrollment, so noise cannot collapse the match
         onnxEmbedder?.let { emb ->
             for (i in 0 until n) { embWindow[embPos] = src[i]; embPos = (embPos + 1) % embWindow.size }
             samplesSinceEmbed += n
-            if (samplesSinceEmbed >= sampleRate / 5) {
+            if (samplesSinceEmbed >= sampleRate * 3 / 10) {          // every 300 ms, if the last one is done
                 samplesSinceEmbed = 0
-                val win = FloatArray(embWindow.size)
-                var idx = embPos
-                for (i in win.indices) { win[i] = embWindow[idx]; idx = (idx + 1) % embWindow.size }
-                if (enrolling) emb.addEnrollWindow(win)
-                else if (emb.isEnrolled) emb.similarity(win)?.let { onnxSimPrior = it }
+                if (embedBusy.compareAndSet(false, true)) {
+                    val win = FloatArray(embWindow.size)
+                    var idx = embPos
+                    for (i in win.indices) { win[i] = embWindow[idx]; idx = (idx + 1) % embWindow.size }
+                    val forEnrollment = enrolling
+                    try {
+                        embedExecutor.execute {
+                            try {
+                                if (forEnrollment) emb.addEnrollWindow(win)
+                                else if (emb.isEnrolled) emb.similarity(win)?.let { onnxSimPrior = it }
+                            } catch (_: Throwable) {
+                            } finally { embedBusy.set(false) }
+                        }
+                    } catch (_: Throwable) { embedBusy.set(false) }
+                }
             }
         }
         chain.externalSimilarity = if (!enrolling && onnxEmbedder?.isEnrolled == true) onnxSimPrior else null

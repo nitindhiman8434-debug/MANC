@@ -54,7 +54,7 @@ object AudioReflect {
             // The stream arrives in 20 ms pieces exactly as fast as it is played, so without
             // a head start the track runs dry between pieces (8 underruns a second were
             // measured on a real call): start 60 ms ahead.
-            tracks.forEach { pad(it, 60) }
+            tracks.forEach { pad(it, 100) }
             BridgeLog.i(TAG, "injector started: " + tracks.joinToString { "state=${it.playState} rate=${it.sampleRate} buf=${it.bufferSizeInFrames}" })
         }
 
@@ -65,7 +65,7 @@ object AudioReflect {
                 try {
                     if (check) {
                         val u = try { t.underrunCount } catch (_: Throwable) { 0 }
-                        if (u > lastUnderruns[i]) { lastUnderruns[i] = u; pad(t, 40) }
+                        if (u > lastUnderruns[i]) { lastUnderruns[i] = u; pad(t, 60) }
                     }
                     val n = t.write(pcm, 0, len, AudioTrack.WRITE_NON_BLOCKING)
                     if (i == 0) { offered += len; if (n > 0) accepted += n; if (n < len) refused++ }
