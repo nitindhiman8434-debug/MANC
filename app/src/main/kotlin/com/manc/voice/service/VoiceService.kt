@@ -22,6 +22,8 @@ import com.manc.voice.audio.AudioEngine
 import com.manc.voice.audio.Meters
 import com.manc.voice.data.Prefs
 import com.manc.voice.shizuku.ShizukuManager
+import com.manc.voice.adb.AdbLauncher
+import com.manc.voice.bridge.BridgeHub
 import org.json.JSONObject
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -30,8 +32,8 @@ import java.io.FileOutputStream
  * Always-on standby service. While "protection" is on it:
  *  - listens for calls from any app (audio mode) and runs the cleaning pipeline
  *    only for the duration of a call (or while forced on for tests/enrollment),
- *  - keeps trying to reach the Shizuku bridge and tells the user when Shizuku
- *    needs to be started,
+ *  - keeps the shell bridge alive: restarts the built-in helper by itself (or uses
+ *    a running Shizuku) and tells the user only when a step really needs them,
  *  - comes back after reboot via BootReceiver.
  * The app never records audio itself; the bridge does.
  */
@@ -49,8 +51,11 @@ class VoiceService : Service() {
     private val bridgeRetry = object : Runnable {
         override fun run() {
             ShizukuManager.refresh(applicationContext)
-            val ok = ShizukuManager.bridge != null
-            Controller.setBridgeHint(if (ok) "" else "Start Shizuku to enable protection")
+            BridgeHub.refresh()
+            val ok = BridgeHub.bridge != null
+            // no bridge: restart the built-in helper by ourselves when nothing needs the user
+            if (ok) AdbLauncher.evaluate(applicationContext) else AdbLauncher.ensureRunning(applicationContext)
+            Controller.setBridgeHint(if (ok) "" else AdbLauncher.hint())
             if (!pipelineRunning) updateNotification()
             handler.postDelayed(this, 5000)
         }
@@ -99,7 +104,7 @@ class VoiceService : Service() {
     // ---- notification ----
     private fun statusText(): String = when {
         pipelineRunning -> "Protecting your voice" + (if (inCall) " (in call)" else " (test)")
-        ShizukuManager.bridge == null -> "Start Shizuku to enable protection"
+        BridgeHub.bridge == null -> AdbLauncher.hint().ifEmpty { "Reconnecting…" }
         else -> "Standing by. Starts automatically when a call connects."
     }
 
@@ -130,10 +135,11 @@ class VoiceService : Service() {
 
     // ---- pipeline ----
     private fun startPipeline() {
-        val bridge = ShizukuManager.bridge
+        val bridge = BridgeHub.bridge
         if (bridge == null) {
-            Controller.setStatus("Start Shizuku to enable protection.")
+            Controller.setStatus(AdbLauncher.hint().ifEmpty { "Reconnecting…" })
             ShizukuManager.refresh(applicationContext)
+            AdbLauncher.ensureRunning(applicationContext)
             handler.postDelayed({ if (!pipelineRunning) evaluate() }, 2000)
             return
         }
@@ -205,7 +211,7 @@ class VoiceService : Service() {
             if (!ok) {
                 Controller.setStatus(when (mode) {
                     Controller.Mode.CELLULAR -> "Cellular path not available on this device (see Cellular Lab report)."
-                    Controller.Mode.AUTO -> "Could not install the virtual microphone. Is the Shizuku bridge connected?"
+                    Controller.Mode.AUTO -> "Could not install the virtual microphone. See Advanced → Connection diagnostics."
                     else -> "Could not install the virtual microphone for the selected app."
                 })
                 return

@@ -102,6 +102,8 @@ dependencies {
     // daemon so the app is self-contained (no separate Shizuku app needed).
     implementation(libs.libadb.android)
     implementation(libs.sun.security.android)
+    // TLS 1.3 key export for the pairing handshake without touching hidden platform APIs.
+    implementation(libs.conscrypt.android)
     implementation(libs.onnxruntime.android)
 
     debugImplementation(libs.androidx.ui.tooling)

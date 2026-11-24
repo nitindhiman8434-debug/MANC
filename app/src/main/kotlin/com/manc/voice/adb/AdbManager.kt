@@ -18,8 +18,6 @@ import android.sun.security.x509.X500Name
 import android.sun.security.x509.X509CertImpl
 import android.sun.security.x509.X509CertInfo
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
-import io.github.muntashirakon.adb.AdbStream
-import io.github.muntashirakon.adb.LocalServices
 import io.github.muntashirakon.adb.android.AndroidUtils
 import java.io.File
 import java.security.KeyFactory
@@ -35,9 +33,9 @@ import java.util.Random
 
 /**
  * The app's own ADB client. It pairs with and connects to the device's own
- * wireless-debugging daemon (127.0.0.1) and opens shell / localabstract streams
- * — the same capability Shizuku uses internally, but embedded, so no separate
- * Shizuku app is required.
+ * wireless-debugging daemon (127.0.0.1) and runs one shell command there to
+ * start the helper (see AdbLauncher) — the same capability Shizuku uses
+ * internally, but embedded, so no separate Shizuku app is required.
  *
  * Key + certificate are generated once and persisted in filesDir. Based on the
  * libadb-android sample (dual GPL-3.0-or-later OR Apache-2.0); see NOTICE.
@@ -71,13 +69,6 @@ class AdbManager private constructor(context: Context) : AbsAdbConnectionManager
     override fun getPrivateKey(): PrivateKey = privateKey
     override fun getCertificate(): Certificate = certificate
     override fun getDeviceName(): String = "MANC Voice"
-
-    /** Open a stream to an abstract-namespace LocalServerSocket the shell server bound. */
-    fun openAbstract(name: String): AdbStream =
-        openStream(LocalServices.LOCAL_UNIX_SOCKET_ABSTRACT, name)
-
-    fun openShell(command: String): AdbStream =
-        openStream(LocalServices.SHELL, command)
 
     companion object {
         @Volatile private var instance: AdbManager? = null

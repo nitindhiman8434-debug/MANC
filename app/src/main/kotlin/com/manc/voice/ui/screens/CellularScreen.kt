@@ -7,7 +7,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.manc.voice.shizuku.ShizukuManager
+import com.manc.voice.bridge.BridgeHub
 import com.manc.voice.ui.components.SectionCard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -37,7 +37,7 @@ fun CellularScreen(onBack: () -> Unit) {
                 busy = true
                 scope.launch {
                     val r = withContext(Dispatchers.IO) {
-                        try { ShizukuManager.bridge?.probeCellular() } catch (e: Exception) { "{\"verdict\":\"PROBE_FAILED\",\"error\":\"${e.message}\"}" }
+                        try { BridgeHub.bridge?.probeCellular() } catch (e: Exception) { "{\"verdict\":\"PROBE_FAILED\",\"error\":\"${e.message}\"}" }
                     }
                     report = r
                     verdict = try { JSONObject(r ?: "{}").optString("verdict", "UNKNOWN") } catch (e: Exception) { "UNKNOWN" }
@@ -52,7 +52,7 @@ fun CellularScreen(onBack: () -> Unit) {
                     "LIKELY_SUPPORTED" -> "Good news: this device looks able to clean cellular calls. Start cleaning in Cellular mode during a call."
                     "NOT_SUPPORTED_ON_THIS_DEVICE" -> "This device does not expose cellular audio to software. Cellular cleaning will not work here; use App calls instead."
                     "UNKNOWN" -> "Could not tell yet. Try again during an active cellular call."
-                    else -> "Check failed. Make sure the Shizuku bridge is connected."
+                    else -> "Check failed. Finish setup first so the bridge is connected."
                 }
                 SectionCard("Result: $verdict") { Text(friendly, style = MaterialTheme.typography.bodyMedium) }
             }

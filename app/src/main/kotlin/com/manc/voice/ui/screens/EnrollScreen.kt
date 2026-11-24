@@ -41,7 +41,7 @@ fun EnrollScreen(onBack: () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium)
             }
             if (run != Controller.Run.RUNNING) {
-                Text("Waiting for the bridge... (turn protection on and make sure Shizuku is running)",
+                Text("Waiting for the bridge… (turn protection on and finish setup)",
                     color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
             }
             Spacer(Modifier.height(16.dp))

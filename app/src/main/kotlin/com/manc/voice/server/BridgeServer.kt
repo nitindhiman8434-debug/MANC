@@ -1,202 +1,154 @@
-@file:JvmName("BridgeServer")
-
 package com.manc.voice.server
 
 import android.net.LocalServerSocket
 import android.net.LocalSocket
+import android.net.LocalSocketAddress
+import android.os.Build
+import android.os.Bundle
+import android.os.IBinder
 import android.os.Looper
 import android.os.Process
-import com.manc.voice.audio.dsp.Resampler
-import com.manc.voice.bridge.hidden.AudioReflect
+import com.manc.voice.bridge.VoiceBridgeService
 import com.manc.voice.bridge.hidden.ShellContext
-import com.manc.voice.bridge.hidden.ShellMic
-import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 
 /**
- * Entry point launched as the shell user (UID 2000) via:
+ * The shell-user helper (UID 2000). The app starts it once over the phone's own
+ * wireless-debugging ADB:
  *
- *   CLASSPATH=<app.apk> app_process /system/bin com.manc.voice.server.BridgeServer <appId>
+ *   CLASSPATH=<app.apk> setsid app_process /system/bin --nice-name=manc_voice_bridge \
+ *       com.manc.voice.server.BridgeServer <pkg> <versionCode> <userId> &
  *
- * The shell UID is what makes the hidden audio-routing API reachable; the app
- * process itself never holds those permissions. This replaces the Shizuku
- * UserService: the in-app ADB client (see adb/AdbManager) starts this over the
- * device's own wireless-debugging ADB, so no separate Shizuku app is needed.
+ * It then lives on its own, detached from ADB: it hosts the same
+ * [VoiceBridgeService] Binder that used to run inside Shizuku and hands it to
+ * the app through the app's exported BridgeProvider, again whenever the app
+ * process restarts. Wi-Fi / wireless debugging are only needed for the few
+ * seconds it takes to start this process.
  *
- * Only framework + this app's pure-Kotlin DSP/reflection classes are touched,
- * never AndroidX, so the class loads cleanly under app_process.
+ * Touches only framework classes and this app's own bridge classes (no
+ * AndroidX), so it loads cleanly under app_process.
  */
 object BridgeServer {
-
-    private const val TAG = "BridgeServer"
-
-    @Volatile private var running = true
-    @Volatile private var injection: AudioReflect.InjectionHandle? = null
-    @Volatile private var micRecord: android.media.AudioRecord? = null
-    private val threads = ArrayList<Thread>()
+    private val logBuf = StringBuilder()
+    private val wake = Object()
 
     @JvmStatic
     fun main(args: Array<String>) {
-        val appId = args.getOrNull(0) ?: "com.manc.voice"
-        try { Looper.prepareMainLooper() } catch (_: Throwable) {}
-        log("start uid=${Process.myUid()} appId=$appId sdk=${android.os.Build.VERSION.SDK_INT}")
-        ShellContext.prepare()
+        val pkg = args.getOrNull(0) ?: run { System.err.println("usage: BridgeServer <pkg> <versionCode> <userId>"); return }
+        val versionCode = args.getOrNull(1)?.toIntOrNull() ?: 0
+        val userId = args.getOrNull(2)?.toIntOrNull() ?: 0
+        val apkPath = System.getenv("CLASSPATH").orEmpty()
+        log("start pid=${Process.myPid()} uid=${Process.myUid()} sdk=${Build.VERSION.SDK_INT} pkg=$pkg v=$versionCode")
 
-        // Control socket: one command, one JSON reply, kept open. Its close = shutdown.
-        val ctl = try {
-            LocalServerSocket(BridgeProtocol.socketName(appId, BridgeProtocol.CTL))
+        try { Looper.prepareMainLooper() } catch (_: Throwable) { }
+        escapeAdbCgroup()
+        if (!becomeTheOnlyInstance(pkg)) { log("another instance holds the lock; exiting"); return }
+
+        val service = try {
+            ShellContext.prepare()
+            VoiceBridgeService()
         } catch (e: Throwable) {
-            log("ctl bind failed: ${e.message}"); return
+            log("bridge init failed: $e"); return
         }
 
-        val ctlThread = Thread {
+        Thread({ deliverLoop(pkg, userId, versionCode, apkPath, service) }, "manc-deliver").start()
+        Looper.loop()
+    }
+
+    /**
+     * Keep the app supplied with our Binder: send it now, and again each time the
+     * app process dies and comes back. Exit when the APK we were loaded from is
+     * gone (uninstall or update; an updated app starts a fresh helper).
+     */
+    private fun deliverLoop(pkg: String, userId: Int, versionCode: Int, apkPath: String, service: VoiceBridgeService) {
+        var appToken: IBinder? = null
+        var misses = 0
+        while (true) {
+            if (apkPath.isNotEmpty() && !File(apkPath).exists()) { log("apk gone; exiting"); System.exit(0) }
+            val alive = appToken?.isBinderAlive == true
+            if (!alive) {
+                appToken = null
+                try {
+                    val extras = Bundle()
+                    extras.putBinder(BinderSender.KEY_BRIDGE, service)
+                    extras.putInt(BinderSender.KEY_VERSION, versionCode)
+                    extras.putString(BinderSender.KEY_LOG, synchronized(logBuf) { logBuf.toString() })
+                    val reply = BinderSender.send(pkg, userId, extras)
+                    val token = reply?.getBinder(BinderSender.KEY_TOKEN)
+                    if (token != null) {
+                        token.linkToDeath({ synchronized(wake) { wake.notifyAll() } }, 0)
+                        appToken = token
+                        misses = 0
+                        log("binder delivered")
+                    } else {
+                        misses++
+                        log("provider unreachable (try $misses)")
+                    }
+                } catch (e: Throwable) {
+                    misses++
+                    log("deliver failed (try $misses): ${e.message ?: e}")
+                }
+            }
+            val waitMs = if (appToken != null) 10_000L else minOf(15_000L, 2_000L * (misses.coerceAtLeast(1)))
+            synchronized(wake) { try { wake.wait(waitMs) } catch (_: InterruptedException) { } }
+        }
+    }
+
+    /**
+     * adbd's children share its control group, and init kills that whole group
+     * when adbd stops (for example when wireless debugging is switched off).
+     * Moving ourselves to a root group first is what lets the helper outlive the
+     * ADB session; the same step Shizuku's starter performs. Best effort.
+     */
+    private fun escapeAdbCgroup() {
+        val pid = Process.myPid().toString().toByteArray()
+        var moved = false
+        for (root in arrayOf("/acct", "/dev/cg2_bpf", "/sys/fs/cgroup", "/dev/memcg/apps")) {
+            if (moved && root == "/dev/memcg/apps") break
             try {
-                val client = ctl.accept()
-                val reader = client.inputStream.bufferedReader()
-                val writer = client.outputStream.bufferedWriter()
-                val line = reader.readLine()
-                val cmd = line?.let { BridgeProtocol.parse(it) }
-                val reply = handle(appId, cmd)
-                writer.write(reply.toString()); writer.write("\n"); writer.flush()
-                // Block until the client goes away, then tear down.
-                try { while (reader.readLine() != null) { /* ignore */ } } catch (_: Throwable) {}
+                FileOutputStream("$root/cgroup.procs").use { it.write(pid) }
+                moved = true
+                log("cgroup: moved via $root")
             } catch (e: Throwable) {
-                log("ctl loop: ${e.message}")
-            } finally {
-                shutdown()
-                try { ctl.close() } catch (_: Throwable) {}
+                log("cgroup: $root no (${e.message})")
             }
         }
-        ctlThread.isDaemon = false
-        ctlThread.start()
-        ctlThread.join()
-        log("exit")
+        try { log("cgroup now: " + File("/proc/self/cgroup").readText().trim().replace('\n', ' ')) } catch (_: Throwable) { }
     }
 
-    private fun handle(appId: String, cmd: BridgeProtocol.Command?): JSONObject {
-        val j = JSONObject()
-        if (cmd == null) return j.put("ok", false).put("reason", "bad command")
-        when (cmd) {
-            is BridgeProtocol.Command.Describe -> {
-                j.put("ok", true).put("uid", Process.myUid())
-                    .put("sdk", android.os.Build.VERSION.SDK_INT)
-                    .put("device", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
-                return j
-            }
-            is BridgeProtocol.Command.Stop -> { shutdown(); return j.put("ok", true).put("stopped", true) }
-            is BridgeProtocol.Command.Everywhere -> return startAudio(appId, null, AudioReflect.CALL_PRESETS, cmd.sampleRate)
-            is BridgeProtocol.Command.Uid -> return startAudio(appId, cmd.uid, AudioReflect.CALL_PRESETS, cmd.sampleRate)
-            is BridgeProtocol.Command.Preset -> return startAudio(appId, null, intArrayOf(cmd.preset), cmd.sampleRate)
-        }
-    }
-
-    private fun startAudio(appId: String, uid: Int?, presets: IntArray, sampleRate: Int): JSONObject {
-        val j = JSONObject()
-        val handle = AudioReflect.registerInjector(uid, presets, sampleRate, forCall = false)
-        if (handle == null) return j.put("ok", false).put("reason", "virtual mic registration failed")
-        handle.start()
-        injection = handle
-
-        val rec = ShellMic.create(sampleRate)
-        if (rec == null) {
-            try { handle.release() } catch (_: Throwable) {}
-            injection = null
-            return j.put("ok", false).put("reason", "microphone capture failed")
-        }
-        micRecord = rec
-
-        // MIC: server -> client, real mic resampled to sampleRate.
-        val micSock = LocalServerSocket(BridgeProtocol.socketName(appId, BridgeProtocol.MIC))
-        threads += Thread { pumpMic(micSock, rec, sampleRate) }.apply { isDaemon = true; start() }
-
-        // INJ: client -> server, cleaned PCM into the injector.
-        val injSock = LocalServerSocket(BridgeProtocol.socketName(appId, BridgeProtocol.INJ))
-        threads += Thread { pumpInject(injSock, handle, sampleRate) }.apply { isDaemon = true; start() }
-
-        rec.startRecording()
-        return j.put("ok", true).put("apps", true).put("sampleRate", sampleRate)
-    }
-
-    private fun pumpMic(server: LocalServerSocket, rec: android.media.AudioRecord, outRate: Int) {
-        var client: LocalSocket? = null
+    /**
+     * One helper per installed app. A newly started helper asks the previous one
+     * (if any) to exit by touching its abstract lock socket, then takes the lock.
+     */
+    private fun becomeTheOnlyInstance(pkg: String): Boolean {
+        val name = "manc_voice_bridge.$pkg"
         try {
-            client = server.accept()
-            val out = client.outputStream
-            val devRate = rec.sampleRate
-            val shorts = ShortArray(devRate / 50)
-            val fin = FloatArray(shorts.size)
-            val fout = FloatArray(outRate / 50 + 16)
-            val bytes = ByteArray(fout.size * 2)
-            val resampler = if (devRate != outRate) Resampler(devRate, outRate) else null
-            while (running) {
-                val n = rec.read(shorts, 0, shorts.size)
-                if (n <= 0) continue
-                val m: Int
-                if (resampler != null) {
-                    for (i in 0 until n) fin[i] = shorts[i] / 32768f
-                    m = resampler.process(fin, n, fout)
-                    for (i in 0 until m) {
-                        var v = (fout[i] * 32767f).toInt()
-                        if (v > 32767) v = 32767 else if (v < -32768) v = -32768
-                        bytes[i * 2] = (v and 0xFF).toByte(); bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
-                    }
-                } else {
-                    m = n
-                    for (i in 0 until n) {
-                        val s = shorts[i].toInt()
-                        bytes[i * 2] = (s and 0xFF).toByte(); bytes[i * 2 + 1] = ((s shr 8) and 0xFF).toByte()
-                    }
-                }
-                out.write(bytes, 0, m * 2)
+            LocalSocket().use { s ->
+                s.connect(LocalSocketAddress(name))
+                s.outputStream.write(1)
+                log("asked the previous helper to exit")
             }
-        } catch (e: Throwable) {
-            log("mic pump end: ${e.message}")
-        } finally {
-            try { client?.close() } catch (_: Throwable) {}
-            try { server.close() } catch (_: Throwable) {}
-        }
-    }
-
-    private fun pumpInject(server: LocalServerSocket, handle: AudioReflect.InjectionHandle, sampleRate: Int) {
-        var client: LocalSocket? = null
-        try {
-            client = server.accept()
-            val input = client.inputStream
-            val bytes = ByteArray(sampleRate / 25 * 2)
-            val shorts = ShortArray(bytes.size / 2)
-            while (running) {
-                var filled = 0
-                while (filled < bytes.size) {
-                    val r = input.read(bytes, filled, bytes.size - filled)
-                    if (r <= 0) { running = false; break }
-                    filled += r
-                }
-                if (!running) break
-                val n = filled / 2
-                for (i in 0 until n) {
-                    val lo = bytes[i * 2].toInt() and 0xFF
-                    val hi = bytes[i * 2 + 1].toInt()
-                    shorts[i] = ((hi shl 8) or lo).toShort()
-                }
-                handle.write(shorts, n)
+        } catch (_: Throwable) { /* nobody there */ }
+        for (attempt in 1..20) {
+            try {
+                val lock = LocalServerSocket(name)
+                Thread({
+                    try { lock.accept(); log("replaced by a newer helper; exiting") } catch (_: Throwable) { }
+                    System.exit(0)
+                }, "manc-lock").apply { isDaemon = true; start() }
+                return true
+            } catch (_: Throwable) {
+                try { Thread.sleep(150) } catch (_: InterruptedException) { }
             }
-        } catch (e: Throwable) {
-            log("inject pump end: ${e.message}")
-        } finally {
-            try { client?.close() } catch (_: Throwable) {}
-            try { server.close() } catch (_: Throwable) {}
         }
-    }
-
-    private fun shutdown() {
-        running = false
-        try { micRecord?.stop() } catch (_: Throwable) {}
-        try { micRecord?.release() } catch (_: Throwable) {}
-        micRecord = null
-        try { injection?.release() } catch (_: Throwable) {}
-        injection = null
+        return false
     }
 
     private fun log(m: String) {
-        System.err.println("$TAG: $m")
+        System.err.println("BridgeServer: $m")
+        synchronized(logBuf) {
+            if (logBuf.length < 6000) logBuf.append(m).append('\n')
+        }
     }
 }

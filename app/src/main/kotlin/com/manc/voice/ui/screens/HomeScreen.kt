@@ -15,7 +15,8 @@ import com.manc.voice.BuildConfig
 import com.manc.voice.Controller
 import com.manc.voice.data.Prefs
 import com.manc.voice.service.VoiceService
-import com.manc.voice.shizuku.ShizukuManager
+import com.manc.voice.adb.AdbLauncher
+import com.manc.voice.bridge.BridgeHub
 import com.manc.voice.ui.components.LevelBar
 import com.manc.voice.ui.components.SectionCard
 
@@ -38,7 +39,7 @@ fun HomeScreen(
     val status by Controller.status.collectAsState()
     val target by Controller.targetPackage.collectAsState()
     val enrolled by Controller.enrolled.collectAsState()
-    val shz by ShizukuManager.state.collectAsState()
+    val bridgeOk by BridgeHub.connected.collectAsState()
     val sinks by Controller.sinks.collectAsState()
     val inCall by Controller.inCall.collectAsState()
     val bridgeHint by Controller.bridgeHint.collectAsState()
@@ -50,10 +51,10 @@ fun HomeScreen(
     var voiceLock by remember { mutableStateOf(Controller.config.voiceLockEnabled) }
     var denoise by remember { mutableStateOf(Controller.config.denoiseEnabled) }
     var advanced by remember { mutableStateOf(false) }
+    var diagnostics by remember { mutableStateOf(false) }
 
     val running = run == Controller.Run.RUNNING || run == Controller.Run.STARTING
     val protectionOn = run != Controller.Run.STOPPED
-    val bridgeOk = shz == ShizukuManager.State.CONNECTED
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -161,6 +162,15 @@ fun HomeScreen(
                     TextButton(onClick = onEnroll) { Text(if (enrolled) "Re-teach my voice" else "Teach my voice") }
                     TextButton(onClick = onCellular) { Text("Cellular Lab (device check)") }
                     TextButton(onClick = onSetup) { Text("Setup details") }
+                    TextButton(onClick = { diagnostics = !diagnostics }) {
+                        Text(if (diagnostics) "Hide connection diagnostics" else "Connection diagnostics")
+                    }
+                    if (diagnostics) {
+                        // one screenshot of this block is a complete failure report
+                        Text(AdbLauncher.diagnostics(ctx), style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        TextButton(onClick = { AdbLauncher.ensureRunning(ctx, force = true) }) { Text("Reconnect now") }
+                    }
                     Text(
                         "Build ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
                         style = MaterialTheme.typography.labelSmall,

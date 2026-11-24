@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import rikka.shizuku.Shizuku
 
-/** Owns the Shizuku permission + user-service lifecycle and exposes the bridge. */
+/** Optional fallback: owns the Shizuku permission + user-service lifecycle. BridgeHub picks the bridge. */
 object ShizukuManager {
     private const val TAG = "ShizukuManager"
     private const val REQ_CODE = 7011
@@ -33,6 +33,7 @@ object ShizukuManager {
             if (service != null && service.pingBinder()) {
                 bridge = IVoiceBridge.Stub.asInterface(service)
                 _state.value = State.CONNECTED
+                com.manc.voice.bridge.BridgeHub.refresh()
                 Log.i(TAG, "bridge connected")
             } else {
                 _state.value = State.ERROR
@@ -41,6 +42,7 @@ object ShizukuManager {
         override fun onServiceDisconnected(name: ComponentName?) {
             bridge = null
             if (_state.value == State.CONNECTED) _state.value = State.CONNECTING
+            com.manc.voice.bridge.BridgeHub.refresh()
         }
     }
 
@@ -94,5 +96,6 @@ object ShizukuManager {
     fun unbind() {
         try { userArgs?.let { Shizuku.unbindUserService(it, connection, true) } } catch (_: Throwable) {}
         bridge = null
+        com.manc.voice.bridge.BridgeHub.refresh()
     }
 }
