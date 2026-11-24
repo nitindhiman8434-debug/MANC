@@ -56,6 +56,14 @@ object BridgeServer {
         } catch (e: Throwable) {
             log("bridge init failed: ${describe(e)}"); e.printStackTrace(); return
         }
+        if (ShellContext.notes.isNotBlank()) log("bootstrap notes: " + ShellContext.notes.trim().replace('\n', ' '))
+        // prove the audio stack is reachable before any call needs it
+        try {
+            val am = ShellContext.context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            log("system context ok; audio mode=${am.mode}")
+        } catch (e: Throwable) {
+            log("system context FAILED: ${describe(e)}")
+        }
         log("bridge ready; delivering to $pkg (user $userId)")
 
         Thread({ deliverLoop(pkg, userId, versionCode, apkPath, service) }, "manc-deliver").start()

@@ -38,8 +38,37 @@ object ShellContext {
         m.invoke(activityThread) as Context
     }
 
+    /** Non-fatal notes from the bootstrap, surfaced in the helper log. */
+    @Volatile var notes: String = ""
+        private set
+
+    private fun note(what: String, e: Throwable) {
+        notes += "$what: ${(e.cause ?: e)}\n"
+    }
+
+    /**
+     * On Samsung devices the system context cannot be created unless the fake
+     * ActivityThread has a ConfigurationController (DisplayManagerGlobal asks
+     * ActivityThread for its configuration). Must run before anything touches
+     * [systemContext]. Same workaround as scrcpy (issue 4467).
+     */
+    private fun fillConfigurationController() {
+        try {
+            val controllerClass = Class.forName("android.app.ConfigurationController")
+            val internalClass = Class.forName("android.app.ActivityThreadInternal")
+            val ctor = controllerClass.getDeclaredConstructor(internalClass)
+            ctor.isAccessible = true
+            val controller = ctor.newInstance(activityThread)
+            val field = activityThreadClass.getDeclaredField("mConfigurationController")
+            field.isAccessible = true
+            field.set(activityThread, controller)
+        } catch (e: Throwable) { note("configuration controller", e) }
+    }
+
+    @Synchronized
     fun prepare() {
         if (prepared) return
+        if (android.os.Build.VERSION.SDK_INT >= 31) fillConfigurationController()
         try {
             // fill app info so AttributionSource uses com.android.shell
             val appBindDataClass = Class.forName("android.app.ActivityThread\$AppBindData")
@@ -53,7 +82,7 @@ object ShellContext {
             val mBound = activityThreadClass.getDeclaredField("mBoundApplication")
             mBound.isAccessible = true
             mBound.set(activityThread, appBindData)
-        } catch (_: Throwable) { }
+        } catch (e: Throwable) { note("app info", e) }
         try {
             // Give the process a real Application so ActivityThread.currentOpPackageName()
             // and AttributionSource resolve to com.android.shell (Android 14+ reject audio
@@ -62,7 +91,7 @@ object ShellContext {
             val mInitialApplication = activityThreadClass.getDeclaredField("mInitialApplication")
             mInitialApplication.isAccessible = true
             mInitialApplication.set(activityThread, app)
-        } catch (_: Throwable) { }
+        } catch (e: Throwable) { note("app context", e) }
         prepared = true
     }
 
@@ -72,6 +101,8 @@ object ShellContext {
             override fun getPackageName(): String = PACKAGE_NAME
             override fun getOpPackageName(): String = PACKAGE_NAME
             override fun getApplicationContext(): Context = this
+            override fun createPackageContext(packageName: String?, flags: Int): Context = this
+            override fun getDeviceId(): Int = 0
             override fun getAttributionSource(): android.content.AttributionSource {
                 val b = android.content.AttributionSource.Builder(Process.SHELL_UID)
                 b.setPackageName(PACKAGE_NAME)
