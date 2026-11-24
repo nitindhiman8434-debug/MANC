@@ -73,7 +73,9 @@ class VoiceService : Service() {
         engine.config.strength = Controller.config.strength
         engine.config.makeupGain = Controller.config.makeupGain
         engine.config.bypass = Controller.config.bypass
+        engine.config.neuralWet = Controller.config.neuralWet
         Controller.enrolledProfile?.let { engine.importProfile(it) }
+        Controller.enrolledNeural?.let { engine.importNeuralProfile(it) }
 
         running = true
         Controller.setRun(Controller.Run.STARTING)
@@ -171,6 +173,7 @@ class VoiceService : Service() {
                     Controller.enrolledProfile = prof
                     Controller.setEnrolled(ok2)
                     if (ok2) Prefs.saveVoiceprintAsync(applicationContext, prof)
+                    engine.exportNeuralProfile()?.let { np -> Controller.enrolledNeural = np; Prefs.saveNeuralVoiceprintAsync(applicationContext, np) }
                 }
 
                 val produced = engine.process(inFloat, n, outFloat)

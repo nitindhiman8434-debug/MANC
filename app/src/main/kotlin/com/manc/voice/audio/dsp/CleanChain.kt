@@ -52,6 +52,7 @@ class CleanChain(val sampleRate: Int = 16000, val frameSize: Int = 256) {
     private var pitchPos = 0
     private val pitchTmp = FloatArray(1024)
     private var speechNoEvidenceMs = 0.0
+    private var elapsedMs = 0.0
 
     var lastSpeech = 0.0; private set
     var lastSim = 1.0; private set
@@ -73,8 +74,10 @@ class CleanChain(val sampleRate: Int = 16000, val frameSize: Int = 256) {
             stftFeat.analyze(input, off)
             for (k in 0 until bins) power[k] = stft.mag[k] * stft.mag[k]
 
+            elapsedMs += frameMs
+            val warm = elapsedMs < 1500.0   // start-up: seed the noise floor fast, no fail-open
             val speech = vad.process(power, noiseEst.noisePower())
-            noiseEst.update(power, speech)
+            noiseEst.update(power, if (warm && !enrolling) 0.0 else speech)
 
             if (spectralDenoise) {
                 val g = denoiser.computeGain(power, noiseEst.noisePower())
@@ -94,13 +97,27 @@ class CleanChain(val sampleRate: Int = 16000, val frameSize: Int = 256) {
             val voiced = f0 > 0
             if (enrolling) profile.addEnrollFrame(shape, f0, voiced)
             var sim = profile.similarity(shape, f0, voiced)
-            externalSimilarity?.let { sim = 0.5 * sim + 0.5 * it }
+
+            // Neural speaker evidence is used ASYMMETRICALLY so a noisy embedding can
+            // never mute the owner on its own:
+            //  - high neural score  -> confirms the owner (raises sim, opens the gate)
+            //  - low neural score   -> reinforces closure only if the voiceprint also
+            //                          leans "not the owner"
+            //  - ambiguous          -> the model-free voiceprint decides, no evidence
+            var extConfident = false
+            externalSimilarity?.let { ext ->
+                when {
+                    ext > 0.6 -> { sim = kotlin.math.max(sim, 0.5 * sim + 0.5 * ext); extConfident = true }
+                    ext < 0.25 && sim < 0.5 -> { sim = kotlin.math.min(sim, 0.5 * sim + 0.5 * ext); extConfident = true }
+                    else -> { }
+                }
+            }
 
             // Fail-open safety: never hard-mute someone who is clearly speaking when we
-            // simply lack identity evidence (no pitch, external model absent). Hard mute
-            // is for silence/background, or a bystander we can positively tell apart.
-            val hasEvidence = voiced || externalSimilarity != null
-            if (speech > 0.58 && !hasEvidence) speechNoEvidenceMs += frameMs else speechNoEvidenceMs = 0.0
+            // simply lack identity evidence. Hard mute is for silence/background, or a
+            // bystander we can positively tell apart.
+            val hasEvidence = voiced || extConfident
+            if (!warm && speech > 0.58 && !hasEvidence) speechNoEvidenceMs += frameMs else speechNoEvidenceMs = 0.0
             if (speechNoEvidenceMs > 250.0 && lastGate < 0.5) sim = kotlin.math.max(sim, 0.85)
 
             val gateGain = gate.process(speech, sim, nearFieldDb)
@@ -111,7 +128,7 @@ class CleanChain(val sampleRate: Int = 16000, val frameSize: Int = 256) {
             off += hop
         }
         for (i in off until n) out[i] = 0f
-        limiter.process(out, off)
+        limiter.process(out, off, lastGate > 0.5)
         return off
     }
 

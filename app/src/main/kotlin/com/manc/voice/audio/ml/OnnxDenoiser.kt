@@ -39,6 +39,8 @@ class OnnxDenoiser private constructor(private val s: OrtBridge.Session) {
     private var outHead = 0; private var outTail = 0
     private var primed = false
     @Volatile var healthy = true; private set
+    /** 1 = fully denoised output, 0 = untouched input; blended per frame in the spectral domain. */
+    @Volatile var wet: Float = 1f
 
     fun process(input: FloatArray, n: Int, out: FloatArray): Int {
         var i = 0
@@ -77,7 +79,11 @@ class OnnxDenoiser private constructor(private val s: OrtBridge.Session) {
             outputs["conv_cache_out"]?.let { if (it.size == convCache.size) convCache = it }
             outputs["tra_cache_out"]?.let { if (it.size == traCache.size) traCache = it }
             outputs["inter_cache_out"]?.let { if (it.size == interCache.size) interCache = it }
-            for (k in 0 until B) { re[k] = enh[k * 2].toDouble(); im[k] = enh[k * 2 + 1].toDouble() }
+            val w = wet.toDouble().coerceIn(0.0, 1.0); val d = 1.0 - w
+            for (k in 0 until B) {
+                re[k] = w * enh[k * 2] + d * mix[k * 2]
+                im[k] = w * enh[k * 2 + 1] + d * mix[k * 2 + 1]
+            }
         } else {
             // model failure: pass the frame through unchanged, mark unhealthy once
             if (healthy) { Log.w(TAG, "GTCRN inference failed; passing through"); healthy = false }
@@ -106,6 +112,11 @@ class OnnxDenoiser private constructor(private val s: OrtBridge.Session) {
         private const val TAG = "OnnxDenoiser"
         fun tryLoad(ctx: Context): OnnxDenoiser? {
             val f = ModelRegistry.denoiserModel(ctx) ?: return null
+            return fromFile(f)
+        }
+
+        /** Load directly from a model file (used by tests and the offline harness). */
+        fun fromFile(f: java.io.File): OnnxDenoiser? {
             val s = OrtBridge.open(f, threads = 1) ?: return null
             val names = s.inputNames
             if (!names.containsAll(listOf("mix", "conv_cache", "tra_cache", "inter_cache"))) {

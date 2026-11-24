@@ -47,6 +47,8 @@ class AudioEngine(
     fun isEnrolled() = chain.profile.isEnrolled || (onnxEmbedder?.isEnrolled == true)
     fun exportProfile(): String = chain.profile.exportState()
     fun importProfile(s: String) { chain.profile.importState(s) }
+    fun exportNeuralProfile(): String? = onnxEmbedder?.exportState()
+    fun importNeuralProfile(s: String) { onnxEmbedder?.importState(s) }
 
     fun process(input: FloatArray, n: Int, out: FloatArray): Int {
         if (config.bypass) {
@@ -66,14 +68,16 @@ class AudioEngine(
         val useNeural = onnxDenoiser != null && config.denoiseEnabled
         val src: FloatArray = if (useNeural) {
             if (denoisedBuf.size < n) denoisedBuf = FloatArray(n)
+            onnxDenoiser!!.wet = config.neuralWet
             onnxDenoiser!!.process(input, n, denoisedBuf)
             denoisedBuf
         } else input
         chain.spectralDenoise = config.denoiseEnabled && !useNeural
 
-        // 2) neural speaker similarity on raw audio every ~200 ms
+        // 2) neural speaker similarity on the (neural-)denoised audio every ~200 ms,
+        //    the same signal used at enrollment, so noise cannot collapse the match
         onnxEmbedder?.let { emb ->
-            for (i in 0 until n) { embWindow[embPos] = input[i]; embPos = (embPos + 1) % embWindow.size }
+            for (i in 0 until n) { embWindow[embPos] = src[i]; embPos = (embPos + 1) % embWindow.size }
             samplesSinceEmbed += n
             if (samplesSinceEmbed >= sampleRate / 5) {
                 samplesSinceEmbed = 0

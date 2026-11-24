@@ -39,6 +39,7 @@ fun HomeScreen(
     var strength by remember { mutableStateOf(Controller.config.strength) }
     var voiceLock by remember { mutableStateOf(Controller.config.voiceLockEnabled) }
     var denoise by remember { mutableStateOf(Controller.config.denoiseEnabled) }
+    var neuralWet by remember { mutableStateOf(Controller.config.neuralWet) }
 
     val running = run == Controller.Run.RUNNING || run == Controller.Run.STARTING
 
@@ -114,6 +115,10 @@ fun HomeScreen(
             Spacer(Modifier.height(6.dp))
             Text("Strength", style = MaterialTheme.typography.labelMedium)
             Slider(value = strength, onValueChange = { strength = it; Controller.config.strength = it }, onValueChangeFinished = { Prefs.saveStrengthAsync(ctx, strength) }, valueRange = 0f..1f)
+            if (meters.usingOnnxDenoiser) {
+                Text("Neural depth (lower if your voice sounds thin)", style = MaterialTheme.typography.labelMedium)
+                Slider(value = neuralWet, onValueChange = { neuralWet = it; Controller.config.neuralWet = it }, onValueChangeFinished = { Prefs.saveNeuralWetAsync(ctx, neuralWet) }, valueRange = 0.3f..1f)
+            }
             Spacer(Modifier.height(4.dp))
             OutlinedButton(onClick = onEnroll, Modifier.fillMaxWidth()) {
                 Text(if (enrolled) "Re-teach my voice" else "Teach the app my voice")

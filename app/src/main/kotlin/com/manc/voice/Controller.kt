@@ -47,6 +47,7 @@ object Controller {
     @Volatile var enrollRequested = false
     @Volatile var enrollFinishRequested = false
     @Volatile var enrolledProfile: String? = null
+    @Volatile var enrolledNeural: String? = null
     private val _enrolled = MutableStateFlow(false)
     val enrolled: StateFlow<Boolean> = _enrolled
     fun setEnrolled(b: Boolean) { _enrolled.value = b }

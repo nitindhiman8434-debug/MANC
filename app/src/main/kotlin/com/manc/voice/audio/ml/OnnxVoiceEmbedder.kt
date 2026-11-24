@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import java.io.File
 import java.nio.FloatBuffer
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
@@ -25,33 +27,62 @@ class OnnxVoiceEmbedder private constructor(
 ) {
     private var refEmb: FloatArray? = null
     private val enrollEmbs = ArrayList<FloatArray>()
+    // auto-calibration from enrollment self-consistency (model-agnostic scale)
+    private var selfMean = 0.8
+    private var selfLo = 0.3
 
     fun beginEnroll() { enrollEmbs.clear(); refEmb = null }
 
     fun addEnrollWindow(mono16k: FloatArray) {
-        embed(mono16k)?.let { enrollEmbs.add(it) }
+        embed(mono16k)?.let { enrollEmbs.add(l2norm(it)) }
     }
 
     fun finishEnroll(): Boolean {
-        if (enrollEmbs.isEmpty()) return false
+        if (enrollEmbs.size < 2) return false
         val d = enrollEmbs[0].size
         val mean = FloatArray(d)
         for (e in enrollEmbs) for (i in 0 until d) mean[i] += e[i]
         for (i in 0 until d) mean[i] /= enrollEmbs.size
-        refEmb = l2norm(mean)
+        val ref = l2norm(mean)
+        // how consistently the owner matches their own reference
+        var s = 0.0; var s2 = 0.0
+        for (e in enrollEmbs) { var dot = 0.0; for (i in 0 until d) dot += e[i] * ref[i]; s += dot; s2 += dot * dot }
+        val n = enrollEmbs.size
+        selfMean = s / n
+        val sd = sqrt(max(s2 / n - selfMean * selfMean, 0.0))
+        // "clearly not the owner" sits well below the owner's own spread
+        selfLo = min(selfMean - 0.45, selfMean - 4.0 * sd).coerceIn(0.1, selfMean - 0.2)
+        refEmb = ref
         return true
     }
 
     val isEnrolled get() = refEmb != null
 
-    /** Cosine similarity mapped to [0,1]; null if it could not run. */
+    /**
+     * Calibrated similarity in [0,1]: 1 = matches the owner as well as their own
+     * enrollment, 0 = at or below the "clearly someone else" level. null if the
+     * model could not run.
+     */
     fun similarity(window16k: FloatArray): Double? {
         val r = refEmb ?: return null
         val e = embed(window16k) ?: return null
         var dot = 0.0
         for (i in r.indices) dot += r[i] * e[i]
-        return ((dot + 1.0) / 2.0).coerceIn(0.0, 1.0)
+        return (((dot - selfLo) / (selfMean - selfLo)).coerceIn(0.0, 1.0) * 0.97)
     }
+
+    /** Persistable state: calibration + reference embedding. */
+    fun exportState(): String? {
+        val r = refEmb ?: return null
+        return "$selfMean;$selfLo;" + r.joinToString(",")
+    }
+
+    fun importState(s: String): Boolean = try {
+        val parts = s.split(';')
+        selfMean = parts[0].toDouble(); selfLo = parts[1].toDouble()
+        refEmb = parts[2].split(',').map { it.toFloat() }.toFloatArray()
+        true
+    } catch (e: Exception) { false }
 
     private fun embed(mono16k: FloatArray): FloatArray? {
         return try {
@@ -82,12 +113,15 @@ class OnnxVoiceEmbedder private constructor(
 
         fun tryLoad(ctx: Context): OnnxVoiceEmbedder? {
             val model = ModelRegistry.speakerModel(ctx) ?: return null
+            return fromFile(model)
+        }
+
+        /** Load directly from a model file (used by tests and the offline harness). */
+        fun fromFile(model: java.io.File): OnnxVoiceEmbedder? {
             return try {
                 val (env, session, input) = OrtBridge.createSession(model) ?: return null
                 OnnxVoiceEmbedder(session, env, input, LogMel(16000, 80))
-            } catch (e: Throwable) {
-                Log.w(TAG, "load failed: ${e.message}"); null
-            }
+            } catch (e: Throwable) { null }
         }
     }
 }

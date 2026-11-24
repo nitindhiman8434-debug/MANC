@@ -30,7 +30,9 @@ class MainActivity : ComponentActivity() {
         // restore persisted settings
         val snap = Prefs.loadBlocking(applicationContext)
         snap.strength?.let { Controller.config.strength = it }
+        snap.neuralWet?.let { Controller.config.neuralWet = it }
         snap.voiceprint?.let { Controller.enrolledProfile = it; Controller.setEnrolled(true) }
+        snap.voiceprintNeural?.let { Controller.enrolledNeural = it }
         Controller.autoStart = snap.autoStart
 
         setContent {

@@ -58,8 +58,11 @@ CI bundles two models into the APK (`app/src/main/assets/models/`):
 - `denoiser.onnx` — GTCRN streaming denoiser (background removal, real-time on CPU).
 - `speaker.onnx` — wespeaker CAM++ speaker embedder (robust "only my voice").
 
-The app also works with no models through a tuned model-free pipeline; measured
-results and its limits are in `docs/ARCHITECTURE.md` §8-9.
+Both models were run end-to-end through the app's own code on the JVM before shipping.
+The neural speaker score is advisory (it can never mute you on its own). If your
+voice sounds thin, lower **Neural depth** in Controls. The app also works with no
+models through a tuned model-free pipeline; measured results and limits are in
+`docs/ARCHITECTURE.md` §5, §8-9.
 
 See `docs/ARCHITECTURE.md` for the full engineering audit, the signal-chain
 analysis, measured voice-lock numbers, and the latency budget.

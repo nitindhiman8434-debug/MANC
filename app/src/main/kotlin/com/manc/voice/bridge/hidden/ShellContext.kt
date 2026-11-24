@@ -54,6 +54,15 @@ object ShellContext {
             mBound.isAccessible = true
             mBound.set(activityThread, appBindData)
         } catch (_: Throwable) { }
+        try {
+            // Give the process a real Application so ActivityThread.currentOpPackageName()
+            // and AttributionSource resolve to com.android.shell (Android 14+ reject audio
+            // tracks/records whose attribution cannot be resolved). Same approach as scrcpy.
+            val app = android.app.Instrumentation.newApplication(android.app.Application::class.java, context)
+            val mInitialApplication = activityThreadClass.getDeclaredField("mInitialApplication")
+            mInitialApplication.isAccessible = true
+            mInitialApplication.set(activityThread, app)
+        } catch (_: Throwable) { }
         prepared = true
     }
 

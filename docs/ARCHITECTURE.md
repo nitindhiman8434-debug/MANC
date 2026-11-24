@@ -109,7 +109,30 @@ Design decisions that came out of measurement (see §9 for the numbers):
 - **Fail-open safety.** Someone who is clearly speaking is never hard-muted merely because
   identity evidence is missing. Hard mute is for silence/background, or a bystander the
   voiceprint can positively tell apart. The user's own voice is the top priority.
-- **Hard mute** (gate closed -> true silence) with strong defaults (strength 0.85).
+- **Hard mute** (gate closed -> true silence) with full-strength defaults (strength 1.0).
+- **Neural evidence is asymmetric.** The speaker embedder can confirm the owner (open the
+  gate when the voiceprint is unsure) or reinforce muting when the voiceprint also says
+  "not the owner"; a low neural score alone never mutes the owner. Measured reason: on
+  noisy input the embedding of the owner can collapse to the same score as a stranger.
+- **Start-up warm-up** (first 1.5 s): the noise floor is seeded fast and fail-open is off,
+  so background does not leak before the estimator has learned it.
+- **AGC + limiter**: the owner's level is driven slowly toward about -18 dBFS while they
+  speak, so the caller hears a consistently loud, clear voice without clipping.
+- **Device safety in the bridge**: the "clean everywhere" injector excludes the bridge's own
+  UID (otherwise it would capture its own injected stream: a feedback loop), and the shell
+  process is given a real Application so attribution resolves on Android 14-17.
+
+### Neural path validated offline (real models through the app's own Kotlin)
+
+| Component | Result on the JVM (x86-64) |
+|-----------|-----------------------------|
+| GTCRN denoiser (`OnnxDenoiser`) | loads, healthy, real-time factor ~0.09; background-only input -31 dB |
+| wespeaker CAM++ (`OnnxVoiceEmbedder`, kaldi fbank) | loads, 27 ms per 1 s window; calibrated owner 0.79, strangers/noise ~0.35 |
+
+Caveat: on synthetic harmonic "voice" GTCRN also attenuates the voice (~-8 dB) and the
+noisy-owner embedding collapses; both models were trained on real speech, so the on-device
+test with a real voice is the deciding measurement. The `Neural depth` control (wet/dry)
+exists so this can be tuned on the phone without a rebuild.
 
 ## 6. Latency budget
 
