@@ -24,8 +24,8 @@ fun EnrollScreen(onBack: () -> Unit) {
     val bridgeOk by BridgeHub.connected.collectAsState()
     val ctx = LocalContext.current
     // the recording needs the pipeline: run it while this screen is open
-    LaunchedEffect(Unit) { Controller.forceActive = true; VoiceService.evaluate(ctx) }
-    DisposableEffect(Unit) { onDispose { Controller.forceActive = false; VoiceService.evaluate(ctx) } }
+    LaunchedEffect(Unit) { Controller.screenNeedsPipeline = true; VoiceService.evaluate(ctx) }
+    DisposableEffect(Unit) { onDispose { Controller.screenNeedsPipeline = false; VoiceService.evaluate(ctx) } }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Teach my voice") }, navigationIcon = {
         TextButton(onClick = onBack) { Text("Back") }

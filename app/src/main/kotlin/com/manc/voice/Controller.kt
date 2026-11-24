@@ -41,7 +41,15 @@ object Controller {
     @Volatile var autoStart: Boolean = true
 
     /** Force the pipeline on without a call (tests, voice enrollment). */
-    @Volatile var forceActive: Boolean = false
+    val forceActive: Boolean get() = _testRun.value || screenNeedsPipeline
+
+    /** The user's "Run now without a call" test switch. A flow, so the switch always shows the truth. */
+    private val _testRun = MutableStateFlow(false)
+    val testRun: StateFlow<Boolean> = _testRun
+    fun setTestRun(b: Boolean) { _testRun.value = b }
+
+    /** Set by the voice-teach screens while they are open; independent of the test switch. */
+    @Volatile var screenNeedsPipeline: Boolean = false
 
     private val _inCall = MutableStateFlow(false)
     val inCall: StateFlow<Boolean> = _inCall

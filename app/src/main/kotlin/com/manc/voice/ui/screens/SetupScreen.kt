@@ -74,10 +74,10 @@ fun SetupScreen(onBack: () -> Unit, notifGranted: Boolean, onRequestNotif: () ->
     val allDone = bridgeOk && enrolled
     // the voice teach needs the pipeline: force it on while we are here and not yet enrolled
     LaunchedEffect(bridgeOk, enrolled) {
-        Controller.forceActive = bridgeOk
+        Controller.screenNeedsPipeline = bridgeOk
         VoiceService.evaluate(ctx)
     }
-    DisposableEffect(Unit) { onDispose { Controller.forceActive = false; VoiceService.evaluate(ctx) } }
+    DisposableEffect(Unit) { onDispose { Controller.screenNeedsPipeline = false; VoiceService.evaluate(ctx) } }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Get ready") }, navigationIcon = {
         TextButton(onClick = onBack) { Text(if (allDone) "Close" else "Later") }

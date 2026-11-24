@@ -46,7 +46,7 @@ fun HomeScreen(
     val inCall by Controller.inCall.collectAsState()
     val bridgeHint by Controller.bridgeHint.collectAsState()
     val ctx = LocalContext.current
-    var runNow by remember { mutableStateOf(Controller.forceActive) }
+    val runNow by Controller.testRun.collectAsState()
 
     var strength by remember { mutableStateOf(Controller.config.strength) }
     var neuralWet by remember { mutableStateOf(Controller.config.neuralWet) }
@@ -104,7 +104,8 @@ fun HomeScreen(
                 running -> "Running (test)"
                 !protectionOn -> "Off. Calls go out unprocessed."
                 bridgeHint.isNotEmpty() -> bridgeHint
-                else -> "Standing by. Starts by itself when a call connects, stops when it ends."
+                !enrolled -> "Almost ready: teach it your voice."
+                else -> "Ready. Standing by: starts by itself when a call connects, stops when it ends."
             },
             style = MaterialTheme.typography.bodySmall,
             color = if (bridgeHint.isNotEmpty() && !running) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
@@ -144,7 +145,7 @@ fun HomeScreen(
                     Spacer(Modifier.height(10.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("Run now without a call (test)", Modifier.weight(1f))
-                        Switch(checked = runNow, onCheckedChange = { runNow = it; Controller.forceActive = it; VoiceService.evaluate(ctx) })
+                        Switch(checked = runNow, onCheckedChange = { Controller.setTestRun(it); VoiceService.evaluate(ctx) })
                     }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("Only my voice (voice-lock)", Modifier.weight(1f))
