@@ -23,6 +23,13 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Install SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Grant gradlew
         run: chmod +x ./gradlew
@@ -41,7 +48,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish rolling prerelease
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/')
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/'))
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ci-latest
