@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.manc.voice.BuildConfig
 import com.manc.voice.Controller
 import com.manc.voice.data.Prefs
 import com.manc.voice.service.VoiceService
@@ -160,6 +161,11 @@ fun HomeScreen(
                     TextButton(onClick = onEnroll) { Text(if (enrolled) "Re-teach my voice" else "Teach my voice") }
                     TextButton(onClick = onCellular) { Text("Cellular Lab (device check)") }
                     TextButton(onClick = onSetup) { Text("Setup details") }
+                    Text(
+                        "Build ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }

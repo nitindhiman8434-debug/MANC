@@ -38,6 +38,29 @@ holds those permissions; the bridge does, and only while you run it.
 That is all. The app never asks for microphone access: the Shizuku bridge captures
 the microphone, the app only processes audio.
 
+### "App not installed" on a Samsung phone
+
+Samsung's installer shows this generic message for every failure. On Galaxy phones
+that shipped with One UI 6.1.1 or later (Z Fold 7, S25, ...) the usual cause is
+**Auto Blocker**, which is on by default and silently rejects any app that does not
+come from the Play Store or Galaxy Store:
+
+1. **Settings → Security and privacy → Auto Blocker → Off** (turn it back on after
+   installing if you like; updates of an installed app are then still blocked, so
+   switch it off again for each update).
+2. If an older MANC build is already on the phone, **uninstall it first**. Builds
+   before November 2026 were signed with a one-off key, so Android refuses to update
+   them in place. Every CI build is now signed with the same committed debug key and
+   updates in place from here on.
+3. Download the APK again (about 100 MB; a cut-off download also fails this way) and
+   open it from Chrome's downloads or **My Files**. If a "Safe Install" warning
+   appears, choose **Install anyway**.
+
+If it still fails, install **SAI (Split APKs Installer)** from the Play Store and
+install the APK through it: it shows the real reason (for example
+`INSTALL_FAILED_VERIFICATION_FAILURE` means a blocker, `INSTALL_FAILED_UPDATE_INCOMPATIBLE`
+means an older build with a different key is still installed).
+
 ## Use
 
 Nothing to do. Protection stands by in the background and **starts by itself the

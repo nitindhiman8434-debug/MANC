@@ -14,8 +14,13 @@ android {
         applicationId = "com.manc.voice"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI stamps every build with its run number so each download is a forward update
+        // (never a rejected downgrade) and the installed build is identifiable under
+        // Advanced on the Home screen. Local builds stay 1 / 0.1.0.
+        val ciRun = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+        val ciSha = System.getenv("GITHUB_SHA")?.take(7)
+        versionCode = ciRun ?: 1
+        versionName = "0.1.0" + (ciRun?.let { "-b$it" } ?: "") + (ciSha?.let { ".$it" } ?: "")
         vectorDrawables { useSupportLibrary = true }
         // Fold 7 and essentially all modern phones are arm64; shipping only this ABI
         // keeps the ONNX Runtime native libs from bloating the APK ~4x.
@@ -27,15 +32,17 @@ android {
     }
 
     signingConfigs {
-        // A stable debug key so CI-built APKs can be upgraded in place by testers.
+        // A stable, committed debug key so every CI build carries the SAME signature and
+        // testers can update in place (a fresh runner would otherwise mint a new random
+        // debug key per build and Android would refuse the update: "App not installed").
         getByName("debug") {
-            val ks = file("debug.keystore")
-            if (ks.exists()) {
-                storeFile = ks
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
-            }
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
 
