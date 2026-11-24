@@ -36,13 +36,31 @@ object AudioReflect {
         private val policy: Any,
         private val tracks: List<AudioTrack>
     ) {
-        fun start() { tracks.forEach { try { it.play() } catch (_: Throwable) {} } }
+        // what actually went into the virtual microphone, for the report
+        private var offered = 0L
+        private var accepted = 0L
+        private var refused = 0L
+
+        fun start() {
+            tracks.forEach { try { it.play() } catch (e: Throwable) { BridgeLog.w(TAG, "track play: ${BridgeLog.describe(e)}") } }
+            BridgeLog.i(TAG, "injector started: " + tracks.joinToString { "state=${it.playState} rate=${it.sampleRate} buf=${it.bufferSizeInFrames}" })
+        }
+
         fun write(pcm: ShortArray, len: Int) {
-            for (t in tracks) {
-                try { t.write(pcm, 0, len, AudioTrack.WRITE_NON_BLOCKING) } catch (_: Throwable) {}
+            for ((i, t) in tracks.withIndex()) {
+                try {
+                    val n = t.write(pcm, 0, len, AudioTrack.WRITE_NON_BLOCKING)
+                    if (i == 0) { offered += len; if (n > 0) accepted += n; if (n < len) refused++ }
+                } catch (_: Throwable) {}
             }
         }
+
+        /** Samples offered / taken by the first track, and how often it took less than offered. */
+        fun stats(): String = "injector: offered=$offered accepted=$accepted shortWrites=$refused" +
+            (tracks.firstOrNull()?.let { " underruns=${try { it.underrunCount } catch (_: Throwable) { -1 }} state=${it.playState}" } ?: "")
+
         fun release() {
+            BridgeLog.i(TAG, stats())
             tracks.forEach { try { it.stop() } catch (_: Throwable) {}; try { it.release() } catch (_: Throwable) {} }
             unregister(policy)
         }

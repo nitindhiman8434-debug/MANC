@@ -136,26 +136,65 @@ object AdbLauncher {
         }
     }
 
+    private val _helperStale = MutableStateFlow(false)
     /**
-     * The helper keeps serving across app updates. When it is older than the app,
-     * replace it in the background as soon as that is possible, without bothering the
-     * user and without touching a call in progress ([idle] must be true).
+     * True while the running helper comes from an older build than the app. Fixes
+     * inside the helper (microphone, virtual mic) are not active until it is replaced,
+     * so this is shown to the user instead of staying silent.
+     */
+    val helperStale: StateFlow<Boolean> = _helperStale
+    /** Why the helper could not be replaced yet, in plain words; empty when not stale or not tried. */
+    @Volatile var staleReason: String = ""; private set
+    @Volatile private var upgradeAttempts = 0
+
+    private fun isStale() = BridgeHub.builtInAlive && BridgeHub.serverVersion != BuildConfig.VERSION_CODE
+
+    /**
+     * The helper keeps serving across app updates so that an update never cuts
+     * protection. But it then runs the old build's code, so replace it as soon as
+     * possible: at once, then every 30 s, later every 5 min; never during a call
+     * ([idle] must be true). What is missing is kept in [staleReason].
      */
     fun upgradeHelperIfStale(ctx: Context, idle: Boolean) {
         val app = ctx.applicationContext
-        if (!idle || busy || !BridgeHub.builtInAlive || BridgeHub.serverVersion == BuildConfig.VERSION_CODE) return
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !isPaired(app) || !wifiConnected(app)) return
-        if (!wirelessDebuggingOn(app) && (!canToggle(app) || needsNetworkApproval)) return
+        val stale = isStale()
+        _helperStale.value = stale
+        if (!stale) { upgradeAttempts = 0; staleReason = ""; return }
+        if (!idle || busy) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !isPaired(app)) { staleReason = "pair once more in Setup details"; return }
+        if (!wifiConnected(app)) { staleReason = "connect to Wi-Fi"; return }
+        if (!wirelessDebuggingOn(app) && (!canToggle(app) || needsNetworkApproval)) {
+            staleReason = "switch Wireless debugging on in Developer options (tick “Always allow on this network”)"
+            return
+        }
         val now = SystemClock.elapsedRealtime()
-        if (lastUpgradeAttempt != 0L && now - lastUpgradeAttempt < 10 * 60_000L) return
+        val gap = if (upgradeAttempts < 10) 30_000L else 5 * 60_000L
+        if (lastUpgradeAttempt != 0L && now - lastUpgradeAttempt < gap) return
         lastUpgradeAttempt = now
+        upgradeAttempts++
+        replaceHelper(app, quiet = true)
+    }
+
+    /** "Restart helper" button: replace the running helper now, whatever its build. */
+    fun restartHelper(ctx: Context) {
+        val app = ctx.applicationContext
+        if (busy) return
+        if (!isPaired(app)) { _error.value = "Not paired yet. Open Setup details."; return }
+        replaceHelper(app, quiet = false)
+    }
+
+    private fun replaceHelper(app: Context, quiet: Boolean) {
         busy = true
         exec.execute {
             val errorBefore = _error.value
-            try { launch(app, firstRun = false) } catch (e: Throwable) { Log.w(TAG, "upgrade: ${e.message}") }
+            _error.value = ""
+            try { launch(app, firstRun = false) } catch (e: Throwable) { fail("Helper restart: ${e.message ?: e}") }
             finally {
-                // the old helper is still serving: a failed upgrade is not the user's problem
-                if (BridgeHub.bridge != null) _error.value = errorBefore
+                val stale = isStale()
+                staleReason = if (stale) _error.value.ifEmpty { "the new helper did not take over yet" } else ""
+                // while an older helper is still serving, a failed background upgrade is not shown as an error
+                if (quiet && BridgeHub.bridge != null) _error.value = errorBefore
+                _helperStale.value = stale
                 busy = false
                 evaluate(app)
             }
@@ -440,7 +479,11 @@ object AdbLauncher {
     /** Text block for Home → Advanced → Connection diagnostics. */
     fun diagnostics(ctx: Context): String = buildString {
         append("Bridge: ").append(BridgeHub.source)
-        if (BridgeHub.source == BridgeHub.Source.BUILT_IN) append(" (helper build ").append(BridgeHub.serverVersion).append(')')
+        if (BridgeHub.source == BridgeHub.Source.BUILT_IN) {
+            append(" (helper build ").append(BridgeHub.serverVersion).append(')')
+            if (isStale()) append("  ** OLDER THAN THE APP: fixes in this build are not active yet; pending: ")
+                .append(staleReason.ifEmpty { "trying" }).append(" **")
+        }
         append('\n')
         append("State: ").append(_step.value).append('\n')
         append("Build ").append(BuildConfig.VERSION_CODE).append(", paired: ").append(isPaired(ctx))

@@ -234,6 +234,16 @@ class VoiceBridgeService : IVoiceBridge.Stub {
             // the start* calls above closed any previous sink; publish the new one now
             sinkPfd = pipe[1]
             sinkOut = FileOutputStream(pipe[1].fileDescriptor)
+            logRecorders("start")
+            // and once more when the call app's own recorder has had time to start
+            val mySink = sinkOut
+            Thread({
+                for ((waitMs, label) in listOf(4000L to "after 4 s", 16000L to "after 20 s")) {
+                    try { Thread.sleep(waitMs) } catch (_: InterruptedException) { }
+                    if (sinkOut !== mySink) return@Thread // that run is over
+                    logRecorders(label); injection?.let { BridgeLog.i(TAG, it.stats()) }
+                }
+            }, "manc-recorders").apply { isDaemon = true; start() }
             report
         } catch (e: Throwable) {
             BridgeLog.e(TAG, "openSink mode=$mode failed", e)
@@ -244,6 +254,27 @@ class VoiceBridgeService : IVoiceBridge.Stub {
     override fun writeClean(pcm: ByteArray?) {
         if (pcm == null || pcm.isEmpty()) return
         try { sinkOut?.write(pcm) } catch (e: Throwable) { BridgeLog.w(TAG, "writeClean: ${BridgeLog.describe(e)}") }
+    }
+
+    /**
+     * Who is recording right now, as the system sees it: each recorder's source, the
+     * device it is fed from, and whether the system is silencing it. During a call
+     * this shows directly whether the call app was moved onto the virtual microphone
+     * and whether our own microphone capture is allowed to hear anything.
+     */
+    private fun logRecorders(moment: String) {
+        try {
+            val am = ShellContext.context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            val list = am.activeRecordingConfigurations
+            BridgeLog.i(TAG, "recorders[$moment]: ${list.size}, mode=${am.mode}")
+            for (c in list) {
+                val uid = try { c.javaClass.getMethod("getClientUid").invoke(c) } catch (_: Throwable) { "?" }
+                val pkg = try { c.javaClass.getMethod("getClientPackageName").invoke(c) } catch (_: Throwable) { "?" }
+                val dev = c.audioDevice
+                BridgeLog.i(TAG, "  uid=$uid pkg=$pkg source=${c.clientAudioSource} silenced=${c.isClientSilenced} " +
+                    "device=${dev?.type}/${dev?.address} rate=${c.clientFormat.sampleRate}")
+            }
+        } catch (e: Throwable) { BridgeLog.w(TAG, "recorders[$moment]: ${BridgeLog.describe(e)}") }
     }
 
     private fun closeSink() {
@@ -291,6 +322,7 @@ class VoiceBridgeService : IVoiceBridge.Stub {
     }
 
     override fun stopInjection() {
+        if (injRunning) logRecorders("stop")
         injRunning = false
         closeSink() // unblocks an injector thread waiting on the in-process pipe
         try { cellular.stop() } catch (_: Throwable) {}

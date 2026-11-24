@@ -8,7 +8,7 @@ import android.util.Log
  * the bridge and show the real reason when the microphone or the virtual mic fails.
  */
 object BridgeLog {
-    private const val MAX = 80
+    private const val MAX = 160
     private val lines = ArrayDeque<String>()
 
     @Synchronized

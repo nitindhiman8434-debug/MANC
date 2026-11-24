@@ -45,6 +45,7 @@ fun HomeScreen(
     val sinks by Controller.sinks.collectAsState()
     val inCall by Controller.inCall.collectAsState()
     val bridgeHint by Controller.bridgeHint.collectAsState()
+    val helperStale by AdbLauncher.helperStale.collectAsState()
     val ctx = LocalContext.current
     val runNow by Controller.testRun.collectAsState()
 
@@ -104,11 +105,12 @@ fun HomeScreen(
                 running -> "Running (test)"
                 !protectionOn -> "Off. Calls go out unprocessed."
                 bridgeHint.isNotEmpty() -> bridgeHint
+                helperStale -> "Updating the helper to this build. Until then the previous build's audio code is in use. Keep Wi-Fi on and open Connection diagnostics if this stays."
                 !enrolled -> "Almost ready: teach it your voice."
                 else -> "Ready. Standing by: starts by itself when a call connects, stops when it ends."
             },
             style = MaterialTheme.typography.bodySmall,
-            color = if (bridgeHint.isNotEmpty() && !running) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+            color = if ((bridgeHint.isNotEmpty() || helperStale) && !running) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         SectionCard("Live") {
@@ -183,7 +185,9 @@ fun HomeScreen(
                         Text(AdbLauncher.diagnostics(ctx), style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Row {
-                            TextButton(onClick = { AdbLauncher.ensureRunning(ctx, force = true) }) { Text("Reconnect now") }
+                            TextButton(onClick = { if (bridgeOk) AdbLauncher.restartHelper(ctx) else AdbLauncher.ensureRunning(ctx, force = true) }) {
+                                Text(if (bridgeOk) "Restart helper" else "Reconnect now")
+                            }
                             TextButton(onClick = { clipboard.setText(AnnotatedString(AdbLauncher.diagnostics(ctx))) }) { Text("Copy report") }
                         }
                     }
