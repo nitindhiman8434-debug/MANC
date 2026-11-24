@@ -28,19 +28,24 @@ lets MANC run a tiny bridge as that shell user after a one-time, on-device
 activation (wireless debugging on Android 11+, no PC, no root). MANC itself never
 holds those permissions; the bridge does, and only while you run it.
 
-## Install
+## Install (once)
 
-1. Install Shizuku and start it (on-device wireless debugging works without a PC).
-2. Install the MANC APK (see Releases, or build below).
-3. Open MANC → Setup → Grant Shizuku.
-4. Grant microphone + notification access when asked.
+1. Install the MANC APK (see Releases) and open it. Protection turns on by itself.
+2. The "Get ready" screen walks you through Shizuku: **Install** (Play Store) →
+   **Open Shizuku** and tap Start → **Allow**. The bridge connects automatically.
+3. Tap **Record** and talk for 5 seconds so the mic opens only for you.
+
+That is all. The app never asks for microphone access: the Shizuku bridge captures
+the microphone, the app only processes audio.
 
 ## Use
 
-1. Tap **Start cleaning** once. It cleans everywhere by default (all apps, plus
-   cellular where the phone allows it) and auto-starts next time the bridge connects.
-2. Tap **Teach the app my voice** and talk for ~5 seconds once (voice-lock).
-3. Make your call. Advanced: limit cleaning to one app from the Home screen.
+Nothing to do. Protection stands by in the background and **starts by itself the
+moment a call connects** (WhatsApp, Zoom, Meet, Telegram, Discord, Teams, or a
+cellular call where the phone allows it) and stops when the call ends. It comes
+back after a reboot; you only start Shizuku once after rebooting (the notification
+tells you when). Advanced knobs (strength, neural depth, limit to one app, a
+"run now" test switch, Cellular Lab) are under **Advanced** on the Home screen.
 
 ## Build
 

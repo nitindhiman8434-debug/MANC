@@ -2,18 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- The app itself never records: the Shizuku bridge captures the microphone. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
     <!-- Shizuku -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
-    <!-- We list the apps we can target as a virtual mic (Android 11+ package visibility). -->
     <queries>
         <package android:name="moe.shizuku.privileged.api" />
         <intent>
@@ -41,10 +41,24 @@
             </intent-filter>
         </activity>
 
+        <!-- Always-on standby: listens for calls and runs the pipeline only while one is active. -->
         <service
             android:name=".service.VoiceService"
             android:exported="false"
-            android:foregroundServiceType="microphone" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Cleans the user's own outgoing call audio through a Shizuku bridge during calls" />
+        </service>
+
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Shizuku provider -->
         <provider

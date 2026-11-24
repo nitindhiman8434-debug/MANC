@@ -134,6 +134,27 @@ noisy-owner embedding collapses; both models were trained on real speech, so the
 test with a real voice is the deciding measurement. The `Neural depth` control (wet/dry)
 exists so this can be tuned on the phone without a rebuild.
 
+## 5b. Hands-free operation (automatic on calls)
+
+A `specialUse` foreground service stands by whenever protection is on. It listens to
+the global audio mode (`AudioManager.OnModeChangedListener`, Android 12+): every VoIP
+app and the telephony stack switch the mode to RINGTONE / IN_CALL / IN_COMMUNICATION
+for the duration of a call and back to NORMAL afterwards, so the pipeline (bridge mic
++ injector + engine) is started at ring time and torn down at hang-up, for any app,
+without the user opening MANC. Older releases fall back to telephony call state
+(cellular only). A boot receiver restores standby after a reboot; Shizuku itself
+must be started once per boot (Android restriction), and the notification says so.
+
+Because the Shizuku bridge is the only process that records, the app needs no
+`RECORD_AUDIO` and no microphone-type foreground service, which removes Android
+14+'s while-in-use restrictions on background-started services.
+
+Known race: the injector policy applies to recorders opened after it is registered.
+Registering at ring/mode-change time precedes the call app's microphone open in
+WebRTC-based apps (mode is set in audio init, before the record starts), so the
+window is milliseconds; a persistent policy would require a permanently open
+microphone and was rejected.
+
 ## 6. Latency budget
 
 | Stage                         | Budget (ms) |

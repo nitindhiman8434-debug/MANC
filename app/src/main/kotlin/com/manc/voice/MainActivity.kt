@@ -1,28 +1,30 @@
 package com.manc.voice
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.manc.voice.service.VoiceService
 import com.manc.voice.data.Prefs
+import com.manc.voice.service.VoiceService
 import com.manc.voice.shizuku.ShizukuManager
 import com.manc.voice.ui.screens.*
 import com.manc.voice.ui.theme.MancTheme
 
 class MainActivity : ComponentActivity() {
+
+    private val notifGrantedState = mutableStateOf(false)
+    private val notifLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        notifGrantedState.value = hasNotifPermission()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,24 +36,16 @@ class MainActivity : ComponentActivity() {
         snap.voiceprint?.let { Controller.enrolledProfile = it; Controller.setEnrolled(true) }
         snap.voiceprintNeural?.let { Controller.enrolledNeural = it }
         Controller.autoStart = snap.autoStart
-        micGrantedState.value = hasMicPermission()
+        notifGrantedState.value = hasNotifPermission()
+        // protection on by default: standby service, auto-activates on calls
+        if (Controller.autoStart) VoiceService.start(this)
 
         setContent {
             MancTheme {
-                // first run (or anything missing) lands on the guided setup, otherwise Home
                 var screen by remember {
-                    mutableStateOf(if (hasMicPermission() && Controller.enrolled.value) Screen.HOME else Screen.SETUP)
+                    mutableStateOf(if (Controller.enrolled.value) Screen.HOME else Screen.SETUP)
                 }
-                val shz by ShizukuManager.state.collectAsState()
-                val run by Controller.run.collectAsState()
-                val micGranted by micGrantedState
-                // Just works: once the bridge is connected and permissions are already granted,
-                // start cleaning automatically (no extra taps).
-                LaunchedEffect(shz) {
-                    if (shz == ShizukuManager.State.CONNECTED && Controller.autoStart &&
-                        run == Controller.Run.STOPPED && hasMicPermission()) startService()
-                }
-
+                val notifGranted by notifGrantedState
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     when (screen) {
                         Screen.HOME -> HomeScreen(
@@ -59,13 +53,13 @@ class MainActivity : ComponentActivity() {
                             onApps = { screen = Screen.APPS },
                             onEnroll = { screen = Screen.ENROLL },
                             onCellular = { screen = Screen.CELLULAR },
-                            onStart = { ensureMicThen { startService() } },
-                            onStop = { stopService() }
+                            onStart = { requestNotifIfNeeded(); VoiceService.start(this) },
+                            onStop = { VoiceService.stop(this) }
                         )
                         Screen.SETUP -> SetupScreen(
                             onBack = { screen = Screen.HOME },
-                            micGranted = micGranted,
-                            onRequestMic = { ensureMicThen { micGrantedState.value = true } },
+                            notifGranted = notifGranted,
+                            onRequestNotif = { requestNotifIfNeeded() },
                             onDone = { screen = Screen.HOME }
                         )
                         Screen.APPS -> AppsScreen(onBack = { screen = Screen.HOME })
@@ -80,39 +74,17 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         ShizukuManager.refresh(applicationContext)
-        micGrantedState.value = hasMicPermission()
+        notifGrantedState.value = hasNotifPermission()
     }
 
-    private val micGrantedState = mutableStateOf(false)
-    private var pendingAction: (() -> Unit)? = null
-    private val micLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        micGrantedState.value = hasMicPermission()
-        if (micGrantedState.value) pendingAction?.invoke()
-        pendingAction = null
-    }
+    private fun hasNotifPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
-    private fun hasMicPermission(): Boolean =
-        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED &&
-        (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
-
-    private fun ensureMicThen(action: () -> Unit) {
-        val needed = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
-            needed += Manifest.permission.RECORD_AUDIO
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-            needed += Manifest.permission.POST_NOTIFICATIONS
-        if (needed.isEmpty()) action() else { pendingAction = action; micLauncher.launch(needed.toTypedArray()) }
-    }
-
-    private fun startService() {
-        val i = Intent(this, VoiceService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
-    }
-
-    private fun stopService() {
-        startService(Intent(this, VoiceService::class.java).apply { action = VoiceService.ACTION_STOP })
+    private fun requestNotifIfNeeded() {
+        if (!hasNotifPermission() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     enum class Screen { HOME, SETUP, APPS, ENROLL, CELLULAR }

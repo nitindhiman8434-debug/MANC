@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.manc.voice.Controller
+import com.manc.voice.service.VoiceService
 import com.manc.voice.shizuku.ShizukuManager
 import com.manc.voice.ui.components.SectionCard
 import kotlinx.coroutines.delay
@@ -27,7 +28,7 @@ private const val SHIZUKU_PKG = "moe.shizuku.privileged.api"
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SetupScreen(onBack: () -> Unit, micGranted: Boolean, onRequestMic: () -> Unit, onDone: () -> Unit) {
+fun SetupScreen(onBack: () -> Unit, notifGranted: Boolean, onRequestNotif: () -> Unit, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val shz by ShizukuManager.state.collectAsState()
     val run by Controller.run.collectAsState()
@@ -38,7 +39,7 @@ fun SetupScreen(onBack: () -> Unit, micGranted: Boolean, onRequestMic: () -> Uni
     // keep state live while the user hops to Play Store / Shizuku and back
     LaunchedEffect(Unit) { while (true) { delay(1500); ShizukuManager.refresh(ctx); tick++ } }
     // auto actions: ask for mic once, ask Shizuku permission as soon as it is possible
-    LaunchedEffect(Unit) { if (!micGranted) onRequestMic() }
+    LaunchedEffect(Unit) { if (!notifGranted) onRequestNotif() }
     LaunchedEffect(shz) { if (shz == ShizukuManager.State.NEED_PERMISSION) ShizukuManager.requestPermission() }
 
     var counting by remember { mutableStateOf(false) }
@@ -52,7 +53,13 @@ fun SetupScreen(onBack: () -> Unit, micGranted: Boolean, onRequestMic: () -> Uni
         }
     }
     val bridgeOk = shz == ShizukuManager.State.CONNECTED
-    val allDone = micGranted && bridgeOk && enrolled
+    val allDone = bridgeOk && enrolled
+    // the voice teach needs the pipeline: force it on while we are here and not yet enrolled
+    LaunchedEffect(bridgeOk, enrolled) {
+        Controller.forceActive = bridgeOk && !enrolled
+        VoiceService.evaluate(ctx)
+    }
+    DisposableEffect(Unit) { onDispose { Controller.forceActive = false; VoiceService.evaluate(ctx) } }
     LaunchedEffect(allDone) { if (allDone) { delay(600); onDone() } }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Get ready") }, navigationIcon = {
@@ -63,9 +70,9 @@ fun SetupScreen(onBack: () -> Unit, micGranted: Boolean, onRequestMic: () -> Uni
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
 
-            StepCard(1, "Microphone & notifications", micGranted,
-                hint = if (micGranted) "Allowed" else "Needed to hear you and to show the live status",
-                action = if (micGranted) null else "Allow" to onRequestMic)
+            StepCard(1, "Notifications (optional)", notifGranted,
+                hint = if (notifGranted) "Allowed" else "Only used to show the standing-by status. The app itself never records your microphone.",
+                action = if (notifGranted) null else "Allow" to onRequestNotif)
 
             StepCard(2, "Shizuku bridge", bridgeOk,
                 hint = when {

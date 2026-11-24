@@ -9,7 +9,8 @@ import kotlinx.coroutines.flow.StateFlow
 object Controller {
     /** AUTO = clean everywhere (all apps + cellular when supported); others are advanced overrides. */
     enum class Mode { AUTO, VOIP, CELLULAR }
-    enum class Run { STOPPED, STARTING, RUNNING, ERROR }
+    /** STANDBY = protection on, waiting for a call; RUNNING = pipeline active. */
+    enum class Run { STOPPED, STANDBY, STARTING, RUNNING, ERROR }
 
     val config = EngineConfig()
 
@@ -38,6 +39,17 @@ object Controller {
     fun setSinks(s: String) { _sinks.value = s }
 
     @Volatile var autoStart: Boolean = true
+
+    /** Force the pipeline on without a call (tests, voice enrollment). */
+    @Volatile var forceActive: Boolean = false
+
+    private val _inCall = MutableStateFlow(false)
+    val inCall: StateFlow<Boolean> = _inCall
+    fun setInCall(b: Boolean) { _inCall.value = b }
+
+    private val _bridgeHint = MutableStateFlow("")
+    val bridgeHint: StateFlow<String> = _bridgeHint
+    fun setBridgeHint(s: String) { _bridgeHint.value = s }
 
     private val _cellularReport = MutableStateFlow<String?>(null)
     val cellularReport: StateFlow<String?> = _cellularReport
