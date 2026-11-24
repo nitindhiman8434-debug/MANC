@@ -17,6 +17,9 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         vectorDrawables { useSupportLibrary = true }
+        // Fold 7 and essentially all modern phones are arm64; shipping only this ABI
+        // keeps the ONNX Runtime native libs from bloating the APK ~4x.
+        ndk { abiFilters += listOf("arm64-v8a") }
         // Expose whether ONNX models were bundled at build time.
         val modelsDir = file("src/main/assets/models")
         val hasModels = modelsDir.isDirectory && (modelsDir.listFiles()?.any { it.name.endsWith(".onnx") } == true)
