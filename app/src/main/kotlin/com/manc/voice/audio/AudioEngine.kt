@@ -37,9 +37,11 @@ class AudioEngine(
     // real call only about 80 % of the audio got through and the far end heard a
     // stuttering voice. It now runs on its own low-priority thread; the audio thread
     // only hands over the latest second of audio and reads the latest score.
-    private val embedExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
-        Thread(r, "manc-speaker").apply { isDaemon = true; priority = Thread.MIN_PRIORITY + 1 }
-    }
+    // one worker that goes away 10 s after the engine stops using it (an engine is built per call)
+    private val embedExecutor = java.util.concurrent.ThreadPoolExecutor(
+        1, 1, 10, java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.LinkedBlockingQueue()
+    ) { r -> Thread(r, "manc-speaker").apply { isDaemon = true; priority = Thread.MIN_PRIORITY + 1 } }
+        .apply { allowCoreThreadTimeOut(true) }
     private val embedBusy = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** Let a speaker-model job that is still running finish (enrollment must not lose it). */
