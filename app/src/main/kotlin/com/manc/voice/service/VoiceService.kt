@@ -245,13 +245,19 @@ class VoiceService : Service() {
                     System.arraycopy(acc, chunkBytes, acc, 0, accLen)
 
                     applyConfig(engine)
-                    if (Controller.enrollRequested) { Controller.enrollRequested = false; engine.beginEnroll() }
+                    if (Controller.enrollRequested) {
+                        Controller.enrollRequested = false
+                        Controller.setEnrollResult(Controller.EnrollResult.NONE)
+                        engine.beginEnroll()
+                    }
                     if (Controller.enrollFinishRequested) {
                         Controller.enrollFinishRequested = false
                         val ok2 = engine.finishEnroll()
                         val prof = engine.exportProfile()
                         Controller.enrolledProfile = prof
-                        Controller.setEnrolled(ok2)
+                        // a failed re-teach keeps the earlier voiceprint, if there was one
+                        Controller.setEnrolled(engine.isEnrolled())
+                        Controller.setEnrollResult(if (ok2) Controller.EnrollResult.SAVED else Controller.EnrollResult.TOO_LITTLE_SPEECH)
                         if (ok2) Prefs.saveVoiceprintAsync(applicationContext, prof)
                         engine.exportNeuralProfile()?.let { np -> Controller.enrolledNeural = np; Prefs.saveNeuralVoiceprintAsync(applicationContext, np) }
                     }

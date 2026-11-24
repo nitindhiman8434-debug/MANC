@@ -10,5 +10,7 @@ data class Meters(
     val nearFieldDb: Float = 0f,
     val usingOnnxEmbedder: Boolean = false,
     val usingOnnxDenoiser: Boolean = false,
-    val locked: Boolean = false
+    val locked: Boolean = false,
+    /** While teaching the voice: how much of the owner's voiced speech has been heard, in ms. */
+    val enrollVoicedMs: Int = 0
 )

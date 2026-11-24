@@ -10,6 +10,8 @@ interface VoiceProfile {
     fun beginEnroll()
     fun addEnrollFrame(shape: DoubleArray, f0: Double, voiced: Boolean)
     fun finishEnroll(): Boolean
+    /** Voiced frames collected in the current enrollment (progress, and what finishEnroll judges). */
+    val enrollVoicedFrames: Int
     fun similarity(shape: DoubleArray, f0: Double, voiced: Boolean): Double
     fun exportState(): String
     fun importState(s: String): Boolean
@@ -17,6 +19,12 @@ interface VoiceProfile {
 
 /** Model-free profile: mean log-spectrum shape + f0 range. */
 class HeuristicVoiceProfile(private val bands: Int = 16) : VoiceProfile {
+    companion object {
+        /** 150 frames of 8 ms: about 1.2 s of voiced sound. */
+        const val MIN_ENROLL_VOICED_FRAMES = 150
+        const val FRAME_MS = 8
+    }
+
     private val refShape = DoubleArray(bands)
     private var refF0 = 0.0
     private var f0Spread = 40.0
@@ -25,6 +33,7 @@ class HeuristicVoiceProfile(private val bands: Int = 16) : VoiceProfile {
 
     private val accShape = DoubleArray(bands)
     private var accCount = 0
+    override val enrollVoicedFrames: Int get() = accCount
     private val f0s = ArrayList<Double>()
 
     override fun beginEnroll() {
@@ -39,7 +48,9 @@ class HeuristicVoiceProfile(private val bands: Int = 16) : VoiceProfile {
     }
 
     override fun finishEnroll(): Boolean {
-        if (accCount < 30) return false
+        // A voiceprint needs real speech: about 1.2 s of voiced sound out of the 5 s
+        // recording. The old limit (a quarter of a second) accepted a cough or a TV.
+        if (accCount < MIN_ENROLL_VOICED_FRAMES) return false
         for (b in 0 until bands) refShape[b] = accShape[b] / accCount
         if (f0s.isNotEmpty()) {
             f0s.sort()

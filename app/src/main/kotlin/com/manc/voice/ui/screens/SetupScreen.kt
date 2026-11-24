@@ -27,6 +27,7 @@ import com.manc.voice.bridge.BridgeHub
 import com.manc.voice.service.VoiceService
 import com.manc.voice.shizuku.ShizukuManager
 import com.manc.voice.ui.components.SectionCard
+import com.manc.voice.ui.components.VoiceTeach
 import kotlinx.coroutines.delay
 
 private const val SHIZUKU_PKG = "moe.shizuku.privileged.api"
@@ -70,27 +71,16 @@ fun SetupScreen(onBack: () -> Unit, notifGranted: Boolean, onRequestNotif: () ->
     LaunchedEffect(Unit) { if (!notifGranted) onRequestNotif() }
     DisposableEffect(Unit) { onDispose { AdbLauncher.stopPairingWatch(); PairingNotifier.cancel(ctx) } }
 
-    var counting by remember { mutableStateOf(false) }
-    var secondsLeft by remember { mutableStateOf(0) }
-    LaunchedEffect(counting) {
-        if (counting) {
-            Controller.enrollRequested = true
-            for (s in 5 downTo 1) { secondsLeft = s; delay(1000) }
-            Controller.enrollFinishRequested = true
-            counting = false
-        }
-    }
     val allDone = bridgeOk && enrolled
     // the voice teach needs the pipeline: force it on while we are here and not yet enrolled
     LaunchedEffect(bridgeOk, enrolled) {
-        Controller.forceActive = bridgeOk && !enrolled
+        Controller.forceActive = bridgeOk
         VoiceService.evaluate(ctx)
     }
     DisposableEffect(Unit) { onDispose { Controller.forceActive = false; VoiceService.evaluate(ctx) } }
-    LaunchedEffect(allDone) { if (allDone) { delay(600); onDone() } }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Get ready") }, navigationIcon = {
-        TextButton(onClick = onBack) { Text("Later") }
+        TextButton(onClick = onBack) { Text(if (allDone) "Close" else "Later") }
     }) }) { pad ->
         Column(Modifier.padding(pad).padding(16.dp).verticalScroll(rememberScrollState())) {
             Text("Done once. After this, MANC protects every call by itself, also after a restart.",
@@ -184,27 +174,31 @@ fun SetupScreen(onBack: () -> Unit, notifGranted: Boolean, onRequestNotif: () ->
                 }
             }
 
-            StepCard(3, "Teach it your voice (5 s)", enrolled,
-                hint = when {
-                    enrolled -> "Done. The mic opens only for you."
-                    !bridgeOk -> "Becomes available as soon as step 2 is connected."
-                    run != Controller.Run.RUNNING -> if (status.isNotBlank()) status else "Opening the microphone…"
-                    counting -> "Keep talking normally... $secondsLeft"
-                    else -> "Read any sentence normally in a quiet spot."
-                },
-                action = if (!enrolled && run == Controller.Run.RUNNING && !counting) "Record" to { counting = true } else null)
+            // ---- step 3: teach the voice ----
+            SectionCard {
+                StepTitle(3, "Teach it your voice", enrolled)
+                Spacer(Modifier.height(6.dp))
+                VoiceTeach(
+                    ready = bridgeOk && run == Controller.Run.RUNNING,
+                    notReadyHint = when {
+                        !bridgeOk -> "Becomes available as soon as step 2 is connected."
+                        status.isNotBlank() -> status
+                        else -> "Opening the microphone…"
+                    },
+                    enrolled = enrolled
+                )
+            }
 
             if (bridgeOk && !enrolled && run != Controller.Run.RUNNING && status.isNotBlank()) {
                 // connected, but the microphone or the virtual mic did not come up: one tap gives the full reason
                 TextButton(onClick = { clipboard.setText(AnnotatedString(AdbLauncher.diagnostics(ctx))) }) { Text("Copy report") }
             }
-            if (counting) {
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) { CircularProgressIndicator() }
-            }
             if (allDone) {
                 Spacer(Modifier.height(12.dp))
-                Button(onClick = onDone, Modifier.fillMaxWidth().height(56.dp)) { Text("Ready — protecting your voice") }
+                Text("All set. MANC now starts by itself when a call connects.",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = onDone, Modifier.fillMaxWidth().height(56.dp)) { Text("Done — go to the main screen") }
             }
         }
     }

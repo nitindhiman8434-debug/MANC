@@ -60,6 +60,12 @@ object Controller {
     @Volatile var enrollFinishRequested = false
     @Volatile var enrolledProfile: String? = null
     @Volatile var enrolledNeural: String? = null
+    /** Outcome of the last voice recording, for the teach screens. */
+    enum class EnrollResult { NONE, SAVED, TOO_LITTLE_SPEECH }
+    private val _enrollResult = MutableStateFlow(EnrollResult.NONE)
+    val enrollResult: StateFlow<EnrollResult> = _enrollResult
+    fun setEnrollResult(r: EnrollResult) { _enrollResult.value = r }
+
     private val _enrolled = MutableStateFlow(false)
     val enrolled: StateFlow<Boolean> = _enrolled
     fun setEnrolled(b: Boolean) { _enrolled.value = b }

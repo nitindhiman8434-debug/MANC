@@ -40,9 +40,11 @@ class AudioEngine(
     fun beginEnroll() { enrolling = true; chain.beginEnroll(); onnxEmbedder?.beginEnroll(); onnxSimPrior = null }
     fun finishEnroll(): Boolean {
         enrolling = false
+        // The model-free profile decides: it knows whether enough voiced speech was
+        // heard. The neural embedder would accept 5 s of anything, so it only follows.
         val a = chain.finishEnroll()
-        val b = onnxEmbedder?.finishEnroll() ?: false
-        return a || b
+        val b = if (a) (onnxEmbedder?.finishEnroll() ?: false) else false
+        return a
     }
     fun isEnrolled() = chain.profile.isEnrolled || (onnxEmbedder?.isEnrolled == true)
     fun exportProfile(): String = chain.profile.exportState()
@@ -106,7 +108,8 @@ class AudioEngine(
             nearFieldDb = nearFieldDb,
             usingOnnxEmbedder = (onnxEmbedder?.isEnrolled == true),
             usingOnnxDenoiser = (onnxDenoiser != null),
-            locked = config.voiceLockEnabled && isEnrolled()
+            locked = config.voiceLockEnabled && isEnrolled(),
+            enrollVoicedMs = if (enrolling) chain.profile.enrollVoicedFrames * 8 else 0
         )
     }
 
