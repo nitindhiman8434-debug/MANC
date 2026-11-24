@@ -44,11 +44,7 @@ object AudioReflect {
         }
         fun release() {
             tracks.forEach { try { it.stop() } catch (_: Throwable) {}; try { it.release() } catch (_: Throwable) {} }
-            try {
-                val m = AudioManager::class.java.getDeclaredMethod("unregisterAudioPolicyStatic", apClass)
-                m.isAccessible = true
-                m.invoke(null, policy)
-            } catch (e: Throwable) { Log.w(TAG, "unregister: ${e.message}") }
+            unregister(policy)
         }
     }
 
@@ -128,10 +124,20 @@ object AudioReflect {
             } catch (e: Throwable) { Log.w(TAG, "createAudioTrackSource: ${e.message}") }
         }
         if (tracks.isEmpty()) {
-            try { AudioManager::class.java.getDeclaredMethod("unregisterAudioPolicyStatic", apClass)
-                .apply { isAccessible = true }.invoke(null, policy) } catch (_: Throwable) {}
+            unregister(policy)
             return null
         }
         return InjectionHandle(policy, tracks)
+    }
+
+    private fun unregister(policy: Any) {
+        for (name in arrayOf("unregisterAudioPolicyStatic", "unregisterAudioPolicyAsyncStatic")) {
+            try {
+                val m = AudioManager::class.java.getDeclaredMethod(name, apClass)
+                m.isAccessible = true
+                m.invoke(null, policy)
+                return
+            } catch (_: Throwable) { }
+        }
     }
 }
