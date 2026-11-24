@@ -66,6 +66,13 @@ class LaunchLogicTest {
         assertFalse(s.contains("& ;"))
     }
 
+    @Test fun grantScriptOnlyGrantsThePermission() {
+        val s = LaunchLogic.buildGrantScript("com.manc.voice.debug")
+        assertTrue(s.startsWith("pm grant com.manc.voice.debug android.permission.WRITE_SECURE_SETTINGS"))
+        assertFalse(s.contains("app_process"))
+        assertTrue(s.trim().endsWith(LaunchLogic.DONE_MARKER))
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun launchScriptRefusesShellMetacharacters() {
         LaunchLogic.buildLaunchScript("com.x; rm -rf /", 1, 0)

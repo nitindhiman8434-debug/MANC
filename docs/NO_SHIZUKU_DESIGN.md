@@ -29,8 +29,8 @@ v5 does the same thing itself:
 
 ```
 one-time                        after every boot (automatic, ~10 s, Wi-Fi needed)
-MANC ── pair(6-digit code) ──►  MANC: wireless debugging ON → find port → connect
-        phone's own adbd              → run one shell command → disconnect → OFF
+MANC ── pair(6-digit code) ──►  MANC: keep-alive settings → find port → connect
+        phone's own adbd              → run one shell command → disconnect
 
 the shell command (as UID 2000):
   pm grant <pkg> WRITE_SECURE_SETTINGS        # lets MANC flip wireless debugging itself next time
@@ -47,10 +47,16 @@ Key properties:
 - **ADB is only a launcher.** Audio never travels over ADB. Once the helper has handed
   over its Binder, wireless debugging and Wi-Fi are not needed, so calls on mobile data
   are protected.
-- **The helper outlives ADB.** It starts in its own session and moves itself out of
-  adbd's control group (init kills that group when adbd stops). If a phone still kills
-  it when wireless debugging goes off, `AdbLauncher` notices once and from then on leaves
-  wireless debugging on instead.
+- **The helper outlives the ADB session, but not adbd.** It starts in its own session,
+  so closing the connection does not touch it. It does share adbd's control group, which
+  init kills when adbd is stopped, and the shell user cannot move out of it (Shizuku's
+  starter only does that as root). Android stops adbd when *neither* debugging switch is
+  on, and wireless debugging goes off by itself whenever Wi-Fi drops. So before every
+  launch the app applies the same three settings Shizuku uses: wireless debugging on,
+  **USB debugging on** (keeps adbd, and the helper, alive without Wi-Fi), and no expiry
+  for the pairing. Found on the first device run: an earlier build switched wireless
+  debugging off after launching, which stopped adbd and killed the helper it had just
+  started.
 - **The helper finds the app again.** It holds a liveness token from the app and re-sends
   its Binder whenever the app process restarts. It exits when its APK disappears
   (uninstall or update); the updated app starts a fresh one.
@@ -77,13 +83,17 @@ Key properties:
 - **Developer options + one pairing code.** That is the doorway itself.
 - **Wi-Fi once after each reboot.** Android only offers wireless debugging on Wi-Fi. On a
   network it has not seen, Android asks once whether to allow wireless debugging there.
-- **Developer options must stay on.** Turning them off stops the helper.
+- **Developer options and USB debugging must stay on.** Turning them off stops the helper.
+  The app switches USB debugging on itself and says so; a computer on the cable still
+  needs on-screen approval.
 - Cellular uplink stays device-gated (modem routing), as before.
 
 ## Not yet proven on a device
 
-This was built and unit-tested without a phone. The two places most likely to need a
-follow-up on One UI 8 are the helper surviving the end of the ADB session and the
-provider call from the shell process. Both report into *Home → Advanced → Connection
-diagnostics*, which prints the launcher state, the last launch output and the helper's
-own log.
+Pairing has worked on a Galaxy Z Fold 7 (One UI 8); the rest is built, unit-tested and
+checked against the Android 16/17 framework classes (the hidden method signatures used
+for the hand-over) and against Shizuku's source, but not yet seen working end to end on
+a phone. Every launch waits for the helper's own confirmation and otherwise collects a
+report (helper log, processes, a provider ping from the shell, matching logcat lines),
+shown under *Details* on the setup screen and in *Home → Advanced → Connection
+diagnostics*, with a Copy button.

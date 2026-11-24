@@ -65,6 +65,20 @@ object LaunchLogic {
 
     fun isSafePackage(pkg: String): Boolean = SAFE_PACKAGE.matches(pkg)
 
+    /**
+     * First contact only: give the app WRITE_SECURE_SETTINGS in a short session of
+     * its own, so that it can apply the keep-alive settings (which may restart
+     * adbd) before the helper is started rather than underneath it.
+     */
+    fun buildGrantScript(pkg: String): String {
+        require(isSafePackage(pkg)) { "unsafe package name" }
+        return listOf(
+            "pm grant $pkg android.permission.WRITE_SECURE_SETTINGS 2>&1",
+            "echo granted",
+            "echo $DONE_MARKER"
+        ).joinToString("\n")
+    }
+
     /** The helper prints this once the app has received its Binder. */
     const val DELIVERED_MARKER = "binder delivered"
     const val PING_METHOD = "manc_ping"

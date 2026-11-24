@@ -41,16 +41,23 @@ shell user. MANC itself never holds those permissions; the helper does.
 3. Tap **Record** and talk for 5 seconds so the mic opens only for you.
 
 That is all, and it is done once. The phone must be on Wi-Fi for step 2 only.
-After a restart MANC switches wireless debugging on for a few seconds, restarts
-its helper and switches it off again, by itself (the phone needs Wi-Fi once after
-booting; calls on mobile data are protected afterwards). On a new Wi-Fi network
-Android may ask once to allow wireless debugging there: tap **Allow**.
+After a restart MANC switches wireless debugging on and restarts its helper by
+itself (the phone needs Wi-Fi once after booting; calls on mobile data are
+protected afterwards). On a new Wi-Fi network Android may ask once to allow
+wireless debugging there: tap **Allow**.
+
+**What MANC switches on, and why.** Android stops its debugging daemon, and the
+helper with it, the moment neither debugging switch is on, and wireless debugging
+switches itself off whenever Wi-Fi drops. So after pairing MANC turns on **USB
+debugging** as well and disables the 7-day expiry of the pairing, exactly as
+Shizuku does. A computer plugged in by cable still needs your approval on the
+unlocked screen before it can use it.
 
 Shizuku is no longer needed. If it is already installed and running, MANC can use
 it instead ("Already use Shizuku?" on the setup screen); on Android 10, which has
 no wireless debugging, it is the only option.
 
-Keep **Developer options** on: switching them off stops the helper. If anything
+Keep **Developer options** and **USB debugging** on: switching them off stops the helper. If anything
 does not connect, *Home → Advanced → Connection diagnostics* shows exactly why.
 
 ### "App not installed" on a Samsung phone

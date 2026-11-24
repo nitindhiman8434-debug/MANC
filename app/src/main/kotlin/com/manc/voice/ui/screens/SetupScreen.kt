@@ -105,7 +105,8 @@ fun SetupScreen(onBack: () -> Unit, notifGranted: Boolean, onRequestNotif: () ->
                 StepTitle(2, "Connect (one time)", bridgeOk)
                 Spacer(Modifier.height(6.dp))
                 when {
-                    bridgeOk -> Hint(if (BridgeHub.source == BridgeHub.Source.SHIZUKU) "Connected through Shizuku" else "Connected")
+                    bridgeOk -> Hint(if (BridgeHub.source == BridgeHub.Source.SHIZUKU) "Connected through Shizuku"
+                                     else "Connected. Keep Developer options and USB debugging switched on: they keep the helper running, also on mobile data.")
 
                     !hasWirelessDebugging -> {
                         Hint("This Android version has no wireless debugging, so MANC needs the free Shizuku helper app here.")

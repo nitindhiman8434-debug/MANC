@@ -1,7 +1,6 @@
 package com.manc.voice.server
 
 import android.annotation.SuppressLint
-import android.os.Binder
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -30,7 +29,10 @@ object BinderSender {
         val authority = authority(pkg)
         val amInterface = Class.forName("android.app.IActivityManager")
         val am = Class.forName("android.app.ActivityManager").getMethod("getService").invoke(null)
-        val token: IBinder = Binder()
+        // A null token, as Shizuku does: the system keys its bookkeeping on the token
+        // object, a Binder that crossed processes never compares equal again, so a real
+        // token could never be removed. With null the system simply keeps a count.
+        val token: IBinder? = null
         val holder = amInterface.getMethod(
             "getContentProviderExternal",
             String::class.java, Int::class.javaPrimitiveType, IBinder::class.java, String::class.java

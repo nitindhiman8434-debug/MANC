@@ -172,13 +172,46 @@ object AdbLauncher {
         return false
     }
 
+    private fun usbDebuggingOn(ctx: Context): Boolean = try {
+        Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
+    } catch (_: Throwable) { false }
+
+    /**
+     * What keeps the helper alive between launches (the same three settings
+     * Shizuku applies):
+     *  - wireless debugging on, so the app can reach adbd now;
+     *  - USB debugging on: Android stops adbd, and every process it started, the
+     *    moment neither debugging switch is on. Wireless debugging switches itself
+     *    off whenever Wi-Fi drops, so without this the helper would die as soon
+     *    as the phone leaves Wi-Fi. A computer still needs on-screen approval;
+     *  - no expiry for the pairing (Android otherwise forgets it after 7 days).
+     * Returns true when USB debugging was just switched on (adbd may restart).
+     */
+    private fun applyKeepAlive(ctx: Context): Boolean {
+        if (!canToggle(ctx)) return false
+        val cr = ctx.contentResolver
+        var usbJustEnabled = false
+        try { if (!wirelessDebuggingOn(ctx)) Settings.Global.putInt(cr, ADB_WIFI_ENABLED, 1) } catch (e: Throwable) { Log.w(TAG, "enable wd: ${e.message}") }
+        try {
+            if (!usbDebuggingOn(ctx)) { Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1); usbJustEnabled = true }
+        } catch (e: Throwable) { Log.w(TAG, "enable usb debugging: ${e.message}") }
+        try { Settings.Global.putLong(cr, "adb_allowed_connection_time", 0L) } catch (e: Throwable) { Log.w(TAG, "pairing expiry: ${e.message}") }
+        return usbJustEnabled
+    }
+
     private fun launch(ctx: Context, firstRun: Boolean) {
-        // After a reboot the app switches wireless debugging on by itself. It is then
-        // left on: on some phones the helper is stopped together with adbd, and
-        // Android switches it off again on its own when the Wi-Fi network changes.
-        if (!wirelessDebuggingOn(ctx) && canToggle(ctx)) {
-            try { Settings.Global.putInt(ctx.contentResolver, ADB_WIFI_ENABLED, 1) } catch (e: Throwable) { Log.w(TAG, "enable wd: ${e.message}") }
+        if (!canToggle(ctx)) {
+            // First contact: a short session only to grant the app the permission it
+            // needs for the keep-alive settings. They can restart adbd, so they must be
+            // in place before the helper starts, not applied underneath it.
+            val mgr = AdbManager.getInstance(ctx)
+            if (!connect(ctx, mgr)) { failures++; return }
+            val out = try { runShell(mgr, LaunchLogic.buildGrantScript(ctx.packageName), 12_000) } catch (e: Throwable) { "shell error: ${e.message ?: e}" }
+            try { mgr.disconnect() } catch (_: Throwable) { }
+            lastLog = "grant: " + out.trim()
+            sleep(500)
         }
+        if (applyKeepAlive(ctx)) sleep(3000) // let adbd settle if it restarted
         if (startHelper(ctx)) { failures = 0; _error.value = "" } else failures++
     }
 
@@ -192,7 +225,7 @@ object AdbLauncher {
         val userId = Process.myUid() / 100000
         val script = LaunchLogic.buildLaunchScript(ctx.packageName, BuildConfig.VERSION_CODE, userId)
         val out = try { runShell(mgr, script, 45_000) } catch (e: Throwable) { "shell error: ${e.message ?: e}" }
-        lastLog = out
+        lastLog = (if (lastLog.startsWith("grant: ")) lastLog.lineSequence().first() + "\n" else "") + out
         try { mgr.disconnect() } catch (_: Throwable) { }
         val deadline = SystemClock.elapsedRealtime() + 6_000
         while (SystemClock.elapsedRealtime() < deadline) {
@@ -316,7 +349,9 @@ object AdbLauncher {
         append('\n')
         append("State: ").append(_step.value).append('\n')
         append("Build ").append(BuildConfig.VERSION_CODE).append(", paired: ").append(isPaired(ctx))
-            .append(", self-toggle: ").append(canToggle(ctx)).append('\n')
+            .append(", self-toggle: ").append(canToggle(ctx))
+            .append(", wireless debugging: ").append(wirelessDebuggingOn(ctx))
+            .append(", USB debugging: ").append(usbDebuggingOn(ctx)).append('\n')
         append("Android ").append(Build.VERSION.RELEASE).append(" (SDK ").append(Build.VERSION.SDK_INT).append("), ")
             .append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n')
         if (_error.value.isNotEmpty()) append("Last error: ").append(_error.value).append('\n')
